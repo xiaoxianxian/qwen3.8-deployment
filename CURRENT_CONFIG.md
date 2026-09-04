@@ -158,3 +158,67 @@ Ollama 0.33.x 已原生支持 `reasoning_effort=high` 参数，实测有效。�
    → **必须在 Modelfile 显式写入 Qwen 多模态模板**（见上方"二、生效的 Modelfile"）。
    注意：Ollama 模板引擎不支持数组索引/切片，用 `{{ .Content }}` 让引擎自动渲染多模态内容即可；
    写带 `.Content[0]` 或 `slice` 的复杂模板会报 `bad character U+005B '['` 解析失败。
+
+---
+
+## 三、运维与故障排查（2026-09-05 新增）
+
+### 1. 只有一个 Ollama 服务在跑（关键！）
+系统里可能同时有**两个 Ollama 在抢 11434 端口**：
+- **Ollama.app**（GUI，PID 通常 1500+）：登录自启，会自动拉起 `ollama serve` 子进程
+- **自制 LaunchAgent** `com.ollama.serve`：本应带 `KEEP_ALIVE=30m` 常驻，但**本机 launchctl 被沙箱限制**，`load`/`bootstrap` 都报 `I/O error`，无法接管端口
+
+→ 现状：实际服务是 **Ollama.app 的子进程**，它的 `keep_alive` 是 Ollama **默认 5 分钟**，环境变量 `OLLAMA_KEEP_ALIVE=30m` 对 OpenAI 兼容端点的请求**不生效**（见第 3 点）。
+
+**排查命令**：
+```bash
+lsof -nP -iTCP:11434 -sTCP:LISTEN          # 看谁在监听
+pgrep -fl "Ollama.app"                     # 看 GUI 是否在跑
+```
+
+### 2. 502 / 连接被拒：服务没起来
+- 现象：`502 连接被拒绝 (target: http://localhost:11434)`
+- 原因：所有 `ollama serve` 进程都被 kill 了，端口空闲
+- **重启服务**（注意清掉代理变量，否则 ollama 可能走透明代理）：
+```bash
+# 先确认没残留进程抢端口
+lsof -nP -iTCP:11434 -sTCP:LISTEN
+
+# 后台拉起（强制不走代理，监听 127.0.0.1）
+cd /tmp
+nohup env -u http_proxy -u https_proxy -u HTTP_PROXY -u HTTPS_PROXY \
+  OLLAMA_KEEP_ALIVE=30m OLLAMA_FLASH_ATTENTION=1 OLLAMA_KV_CACHE_TYPE=q8_0 \
+  NO_PROXY=localhost,127.0.0.1 \
+  /usr/local/bin/ollama serve > /tmp/ollama_serve.log 2>&1 &
+
+# 验证（务必 --noproxy，见第 4 点）
+curl -s --noproxy localhost http://127.0.0.1:11434/api/version
+```
+
+### 3. "首次失败、重试成功" 的真因（冷启动超时）
+- Ollama 默认 `keep_alive=5m`：模型空闲 5 分钟后从显存卸载
+- 下次发图：先重新加载（~6s）+ 图片推理 prefill（~17s）= **约 23s 冷启动**
+- WorkBuddy 客户端超时比 23s 短 → 报 **499/502 取消**；但这次请求已触发 Ollama 加载模型
+- **重试时模型已在显存 → 秒回成功**
+
+**重要限制**：WorkBuddy 走 OpenAI 兼容 `/v1/chat/completions`，该端点**忽略请求里的 `keep_alive` 字段**；服务端 `OLLAMA_KEEP_ALIVE` 环境变量在本机也对 /v1 请求不生效。所以**无法靠配置让 WorkBuddy 的请求自动常驻 30 分钟**。
+
+**缓解方案（任选）**：
+- 方案 A（最简）：接受首次慢，失败就重试一次（模型已热）
+- 方案 B（零冷启动）：用原生 API 定时续命，每 25 分钟发一次：
+  ```bash
+  curl -s --noproxy localhost http://127.0.0.1:11434/api/chat \
+    -H "Content-Type: application/json" \
+    -d '{"model":"qwen3.8-local","messages":[{"role":"user","content":"hi"}],"keep_alive":"30m","stream":false,"options":{"num_predict":1}}'
+  ```
+  （原生 `/api/chat` 的 `keep_alive` 字段 Ollama 确定支持，能把模型锁定 30 分钟）
+
+### 4. localhost 代理陷阱（排查时极易误判）
+- 本机 shell 被注入了 `http_proxy=127.0.0.1:62635`（WorkBuddy 透明代理）
+- 后果：`curl http://localhost:11434/...` 会**走代理**，返回假成功/假数据，误以为服务在跑
+- **所有本地探测必须加 `--noproxy localhost`**，或直接用 `127.0.0.1`：
+  ```bash
+  curl -s --noproxy localhost http://127.0.0.1:11434/api/ps   # 看真实驻留/expires_at
+  ollama ps                                                    # 注意：此命令走代理，UNTIL 显示可能失真
+  ```
+- Python 请求同理：用 `urllib.request.ProxyHandler({})` 强制直连，且 URL 用 `127.0.0.1`（不要 `localhost`，否则可能解析到 IPv6 `::1` 而 serve 只听 IPv4）

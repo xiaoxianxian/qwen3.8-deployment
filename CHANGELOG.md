@@ -156,3 +156,42 @@ TEMPLATE """{{- if .System }}<|im_start|>system
 - 排查发图问题要**用真实调用路径**（`/v1/chat/completions` + `image_url`）复现，
   而不是只测 `/api/chat`，否则会漏掉这条路径特有的模板绑定 bug
 - 模板调试用最小可复现：先 `ollama create` 看能否解析，再发图验证
+
+---
+
+## 2026-09-05 502/冷启动/双 Ollama 冲突排查
+
+### 发现的问题
+用户测图时先报 `502 连接被拒绝 (target: http://localhost:11434)`。
+此前还反复出现"首次调用失败、重试成功"。
+
+### 根因分析
+1. **双 Ollama 抢端口**：Ollama.app（GUI，登录自启）与自制 LaunchAgent 都尝试监听
+   11434。本机 launchctl 被沙箱限制，`load`/`bootstrap` 均报 `I/O error` 无法托管，
+   实际服务由 Ollama.app 子进程提供。
+2. **502 直接原因**：排查过程中 kill 了所有 ollama 进程，11434 空闲 → 502。
+3. **"首次失败/重试成功"真因 = 冷启动超时**：
+   - Ollama 默认 `keep_alive=5m`，空闲 5 分钟后模型卸载
+   - 下次发图需重新加载(~6s)+图片 prefill(~17s)=约 23s 冷启动
+   - WorkBuddy 客户端超时 < 23s → 499/502 取消；但请求已触发加载
+   - 重试时模型已在显存 → 秒回成功
+4. **keep_alive 对 /v1 不生效**：WorkBuddy 走 OpenAI 兼容 `/v1/chat/completions`，
+   该端点**忽略请求里的 `keep_alive`**；服务端 `OLLAMA_KEEP_ALIVE` 环境变量对 /v1 请求也不生效
+   （server config 里虽显示 `30m0s`，实际默认仍是 5 分钟）。
+   原生 `/api/chat` 的 `keep_alive` 字段才被 Ollama 正确识别。
+
+### 解决方案
+- 重启服务（清掉 shell 代理变量，避免 ollama 走透明代理）：
+  `nohup env -u http_proxy ... OLLAMA_KEEP_ALIVE=30m ... /usr/local/bin/ollama serve &`
+- 预热/续命模型（零冷启动）：每 25 分钟用原生 API 发一次 `keep_alive=30m` 的请求
+- 文档化双 Ollama 冲突、localhost 代理陷阱、IPv4/IPv6 解析坑
+
+### localhost 代理陷阱（排查易误判）
+- shell 含 `http_proxy=127.0.0.1:62635`（WorkBuddy 透明代理），`curl localhost:11434`
+  会走代理返回假数据 → 误判服务存活。本地探测必须 `--noproxy localhost`。
+- Python 用 `127.0.0.1`（勿用 `localhost`，否则可能解析 IPv6 `::1` 而 serve 仅听 IPv4）。
+
+### 验证
+- 服务重启后 `curl --noproxy localhost http://127.0.0.1:11434/api/version` 返回 0.33.2
+- 原生 `keep_alive=30m` 后 `/api/ps` 的 `expires_at` 正确延长到 +30 分钟
+- 图片问答经 `/v1/chat/completions` + `image_url` 验证正常（输出准确）
