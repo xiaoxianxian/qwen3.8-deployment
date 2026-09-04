@@ -14,11 +14,16 @@ FROM /Users/<你的用户名>/models/qwen3.8-27b-Q5.gguf
 FROM /Users/<你的用户名>/models/mmproj-F16.gguf
 
 # ── 上下文窗口 ────────────────────────────────────────────
-# 262144 是 Qwen3.8-27B 的原生上限，直接拉满。
-# 注意：图片会消耗大量 token（实测单张 1024px 图 → 约 13 万 token），
-#       设太小会在 Agent 发图时直接 400 报错。
-# 内存不够时可降到 131072 / 65536，但建议配合下方服务环境变量。
-PARAMETER num_ctx 262144
+# 【重要修正】实测一张 1024×1024 图片仅消耗 ~1084 tokens，
+#             不是文档里写的 "13 万 token"（旧文档误读了报错信息）。
+# 真正触发 400 报错的原因是：图片 + 长对话历史总和超过 num_ctx。
+#
+# num_ctx 选择（M5 Pro / 48GB 实测）：
+#   262144 → 模型 38GB，速度 ~3 tok/s（太慢）
+#   131072 → 模型 28GB，速度 ~9.7 tok/s，100% GPU ✅ 推荐
+#    65536 → 模型 24GB，速度 ~9.6 tok/s，但发图时容易 400（历史累积）
+#
+PARAMETER num_ctx 131072
 
 # ── 采样参数（官方推荐值）──────────────────────────────────
 PARAMETER temperature 0.7
@@ -28,5 +33,13 @@ PARAMETER min_p 0.0
 
 # ── 服务侧配套（不在本文件，需设环境变量，见 setup-guide.md 第八节）──
 #   OLLAMA_KEEP_ALIVE=30m      模型驻留内存 30 分钟，避免每次重载
-#   OLLAMA_FLASH_ATTENTION=1   大幅降低长上下文显存占用
-#   OLLAMA_KV_CACHE_TYPE=q8_0  KV 缓存量化，262K 上下文必备
+#   OLLAMA_FLASH_ATTENTION=1   大幅降低长上下文内存占用
+#   OLLAMA_KV_CACHE_TYPE=q8_0  KV 缓存量化，131K 上下文必备
+#
+# ── ⚠️ 推理模型回复为空的新坑（2026-09 实测）──────────────
+# Qwen3.8 默认开启 thinking 模式，会先用掉一部分 num_predict 用于思考，
+# 如果调用时 num_predict 太小（如 60），思考就把预算吃光了，content 字段为空。
+# 解决：
+#   - 调用方传 options.num_predict ≥ 2000（保证有足够余量）
+#   - 或传 options.think=false 关闭思考模式
+#   - 或在 Ollama 层面设参数：PARAMETER think false（默认行为因版本而异）
