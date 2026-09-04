@@ -97,3 +97,62 @@ WorkBuddy 报告 502 错误，提示"连接被拒绝"，代理端口 11435 无�
 - 旧文档关于"13 万 token"的引用是误读，需实测验证
 - 推理模型的 thinking 模式会占用 token 预算，调用方需预留余量
 - `num_ctx` 不是越大越好，找到性能与容量的 sweet spot 才是关键
+
+---
+
+## 2026-09-04 发图 400 `<|video_pad|>` 报错根因修复（最致命）
+
+### 发现的问题
+WorkBuddy 调 `qwen3.8-local` 发图报错：
+```
+400 BadRequestError: No data iterator found for token: <|video_pad|>
+```
+（走 OpenAI `/v1/chat/completions` + `image_url` 路径，纯文本正常）
+
+### 根因分析
+**这是与 num_ctx、空回复都不同的第三个独立问题。**
+1. 用 python 读 GGUF 元数据确认：该 Qwen3.8-27B GGUF **不内嵌 `chat_template`**
+   （词汇表有 `<|vision_start|>`/`<|image_pad|>`/`<|video_pad|>`/`<|im_start|>` 等 token，但无模板字段）
+2. Modelfile 不写 `TEMPLATE` 时，Ollama 会**自动退回默认裸模板 `{{ .Prompt }}`**
+3. 裸模板不懂图像 token，于是发图时 `<|video_pad|>` 被塞进 prompt 却**没有绑定图像张量**
+   → 报 `No data iterator found for token: <|video_pad|>`
+
+### 误修历史（为什么之前反复修不好）
+- 只改 `num_ctx` 65536→131072、或调 `num_predict`：解决的是另两个问题，与此无关
+- "删掉 TEMPLATE 行"：删掉后 Ollama 又自动填回同一个裸模板，**无效**
+- 必须**显式写入正确的多模态模板**才能覆盖默认裸模板
+
+### 解决方案
+在 Modelfile 显式写入 Qwen 多模态模板，用 `{{ .Content }}` 让 Ollama 引擎自动把
+图像渲染并绑到 `<|image_pad|>` 占位符：
+```dockerfile
+TEMPLATE """{{- if .System }}<|im_start|>system
+{{ .System }}<|im_end|>
+{{ end }}
+{{- range .Messages }}
+{{- if eq .Role "user" }}<|im_start|>user
+{{ .Content }}<|im_end|>
+{{ else if eq .Role "assistant" }}<|im_start|>assistant
+{{ if .Content }}{{ .Content }}{{ end }}{{ if .ReasoningContent }}<think>{{ .ReasoningContent }}</think>{{ end }}<|im_end|>
+{{ end }}
+{{- end }}<|im_start|>assistant
+{{ if .ReasoningContent }}<think>{{ .ReasoningContent }}</think>{{ end }}{{ .Response }}"""
+```
+⚠️ **Ollama 模板引擎不支持数组索引/切片**：写 `{{ .Content[0] }}` 或 `slice` 会报
+`bad character U+005B '['` 解析失败，必须用 `{{ .Content }}`。
+
+### 验证结果
+- 用 WorkBuddy 实际走的 `/v1/chat/completions` + `image_url` 路径发真实图片 → 正确返回描述（~28s）
+- 文本 `/v1` 也正常；GPU 100%、28GB、num_ctx=131072
+- 所有项目文档的 Modelfile 示例均已补上该 TEMPLATE（防复发）
+
+### 关于 `architecture: qwen35`
+`ollama show` 显示的 `qwen35` 只是 llama.cpp/Ollama 给"Qwen3.x 视觉语言模型"家族定的
+**内部架构代号**，不是装错模型。blob `sha256-a83a4b…` 即用户下载的 `Qwen3.8-27B-Q5_K_M`，
+参数 27.3B、上下文 262144、带 CLIP 投影器，确为 Qwen3.8-27B。
+
+### 经验教训
+- GGUF 不内嵌模板时，光删 TEMPLATE 没用，必须显式提供正确模板
+- 排查发图问题要**用真实调用路径**（`/v1/chat/completions` + `image_url`）复现，
+  而不是只测 `/api/chat`，否则会漏掉这条路径特有的模板绑定 bug
+- 模板调试用最小可复现：先 `ollama create` 看能否解析，再发图验证
