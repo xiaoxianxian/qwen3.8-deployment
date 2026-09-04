@@ -48,7 +48,7 @@ export HF_ENDPOINT=https://hf-mirror.com
 | 48GB+ | Q8_K_XL | 29.30 GB |
 
 > 计算公式：实际内存占用 ≈ 模型文件大小 × 1.2
-> 参考实测（M5 Pro / 48GB）：Q5_K_M 生成速度 ~9.6 tok/s，首次加载 ~6s
+> 参考实测（M5 Pro / 48GB）：Q5_K_M 生成速度 ~9.7 tok/s，首次加载 ~6s
 
 下载命令：
 ```bash
@@ -81,11 +81,11 @@ with open(path, 'rb') as f:
 > **注意**：Ollama 版本需 ≥ 0.32.0 支持多模态。
 
 ```bash
-# 创建 Modelfile（主 GGUF + mmproj 投影 + 大上下文）
+# 创建 Modelfile（主 GGUF + mmproj 投影 + 最佳上下文）
 cat > ~/models/Modelfile << 'EOF'
 FROM /path/to/your/Qwen3.8-27B-UD-Q5_K_M.gguf
 FROM /path/to/your/mmproj-F16.gguf
-PARAMETER num_ctx 262144
+PARAMETER num_ctx 131072
 EOF
 
 # 创建模型
@@ -123,8 +123,8 @@ model: qwen3.8-local                  # 必须与 `ollama list` 逐字一致（�
 该脚本会检查 Ollama 服务、模型列表、API 连通性和推理能力。
 
 |- 加载时间: ~6s（首次，M5 Pro / 48GB）
-- 生成速度: ~9.6 tok/s（M5 Pro / 48GB + Q5_K_M）
-- 上下文: 262144 tokens（原生上限，已拉满）
+- 生成速度: ~9.7 tok/s（M5 Pro / 48GB + Q5_K_M + num_ctx=131072）
+- 上下文: 131072 tokens（实测最佳平衡，非原生上限 262144）
 
 ## 常见问题
 

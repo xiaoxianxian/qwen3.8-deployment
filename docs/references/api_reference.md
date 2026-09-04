@@ -123,7 +123,7 @@ Qwen3.8 带 `thinking` 能力。经 Ollama 时，思考过程通常随响应返�
 ||------|------|------|
 || 404 | `model not found` | 模型名与 `ollama list` 不一致；或权重 blob 丢失（见 guide.md 第七节 #5） |
 || 500 | `image input is not supported` | 未挂 mmproj（见 guide.md 第七节 #6） |
-|| 400 | `exceeds the available context` | 对话超 `num_ctx`；已设 65536，仍超则缩短历史或启代理截断（见 #7） |
+|| 400 | `exceeds the available context` | 对话超 `num_ctx`；已设 131072，仍超则缩短历史或启代理截断（见 #7） |
 || 502 | 连接被拒绝 | Ollama 未运行，或前置代理进程被回收（launchd 未托管） |
 
 ## 8. 性能参考
@@ -135,7 +135,7 @@ Qwen3.8 带 `thinking` 能力。经 Ollama 时，思考过程通常随响应返�
 || IQ2_XXS | 6.77 GB | 11–13 GB | ~12–15 tok/s | 中低 |
 || Q3_K_XL | 12.24 GB | 13–16 GB | ~11–13 tok/s | 中 |
 || Q4_K_M | 15.33 GB | 17–19 GB | ~10–11 tok/s | 高 |
-|| **Q5_K_M** | **18.41 GB** | **22–24 GB** | **~9.6 tok/s** | **很高** |
+|| **Q5_K_M** | **18.41 GB** | **~28 GB** | **~9.7 tok/s** | **很高** |
 || Q6_K_XL | 23.56 GB | 28–30 GB | ~8–9 tok/s | 高 |
 || Q8_K_XL | 29.30 GB | 35–40 GB | ~7–8 tok/s | 最高 |
 

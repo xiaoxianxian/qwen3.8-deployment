@@ -33,7 +33,7 @@ lscpu | grep "Model name"
 
 > **计算公式：** 实际内存占用 ≈ 模型文件大小 × 1.2（预留系统 + KV Cache 空间）
 >
-> 示例：Q5_K_M 文件 18.41GB → 实际约需 22GB 内存，24GB 设备可用
+> 示例：Q5_K_M 文件 18.41GB → 实际约需 28GB 内存（num_ctx=131072），24GB+ 设备可用
 
 #### 内存选择决策树
 
@@ -47,8 +47,8 @@ lscpu | grep "Model name"
 ```
 
 **实测参考（M5 Pro / 48GB）：**
-- Q5_K_M 实际内存占用约 22GB（含系统 + 上下文预留）
-- 生成速度：~9.6 tokens/s
+- Q5_K_M 实际内存占用约 28GB（num_ctx=131072）
+- 生成速度：~9.7 tokens/s
 - 首次加载：~6s
 
 ### 3. 检查代理配置
@@ -211,11 +211,11 @@ curl -fsSL https://ollama.com/install.sh | sh
 cat > ~/models/Modelfile << 'EOF'
 FROM /Users/你的用户名/models/qwen3.8-27b-Q5.gguf
 FROM /Users/你的用户名/models/mmproj-F16.gguf
-PARAMETER num_ctx 262144
+PARAMETER num_ctx 131072
 EOF
 ```
 > **挂载视觉投影用第二个 `FROM` 行**（不是 `PROJECTOR`，该指令在 Ollama 0.33 已移除；LoRA 才用 `ADAPTER`）。
-> `num_ctx 262144` 为原生上限，覆盖长对话与发图场景，防 400 报错。
+> `num_ctx 131072` 是 48GB 机器的最佳平衡点（~28GB 内存，100% GPU，~9.7 tok/s），不要盲目拉满 262144。
 >
 > 💡 提示：你可以先用 `ls ~/models/*.gguf` 确认文件名，再替换 Modelfile 中的路径。
 
@@ -531,7 +531,7 @@ ollama rm xxx
 cat > ~/models/Modelfile << 'EOF'
 FROM /path/to/your/qwen3.8-27b-Q5.gguf
 FROM /path/to/your/mmproj-F16.gguf
-PARAMETER num_ctx 262144
+PARAMETER num_ctx 131072
 EOF
 ollama create xxx -f ~/models/Modelfile
 
@@ -559,7 +559,7 @@ ollama run xxx "你好"
    ```text
    FROM /path/to/your/qwen3.8-27b-Q5.gguf
    FROM /path/to/your/mmproj-F16.gguf
-   PARAMETER num_ctx 262144
+   PARAMETER num_ctx 131072
    ```
    ```bash
    ollama rm qwen3.8-local
@@ -593,10 +593,8 @@ ollama run xxx "你好"
 **根因：** WorkBuddy 会把整段对话历史发给本地模型，累计几万 token；在 Metal 上预填充极慢，且旧默认 `num_ctx=32768` 容易被突破。
 
 **修复（已做 + 可选）：**
-1. **上下文窗口已拉满**（已写入 Modelfile）：`PARAMETER num_ctx 262144`（Qwen3.8 原生上限）。
-   ⚠️ **真正的元凶是图片，不是对话历史**：实测一张 1024×1024 的图编码后约 **13 万 token**，
-   单张图就能撑爆 131072 的上下文（真实报错：`request (131167 tokens) exceeds ... (131072)`）。
-   所以 48GB 机器也建议直接拉满 262144，并配合开启 Flash Attention + KV 缓存量化。
+1. **上下文窗口已调至 131072**（最佳平衡点）。
+   ⚠️ 图片实测仅 ~1084 tokens（非 13 万）。400 报错是「图片+长历史」总和超限，需缩短历史或启代理截断。
 2. **（可选）智能代理做上下文截断**：`~/models/ollama_strip_proxy.py` 在 Ollama(11434) 前透明转发，**默认放行图片**（模型已支持视觉，图片会送达），并**按 token 估算自动截断**——超过 `--max-prompt-tokens`（默认 24000）时只保留 `system` + 最近若干轮，丢弃最旧历史，避免超时/400。它**同时解决多模态 + 长对话**两个诉求。
    - 手动起：`python3 ~/models/ollama_strip_proxy.py --port 11435 --upstream http://127.0.0.1:11434`
    - 持久化（登录自启 + 崩溃自启）：已提供 plist `~/Library/LaunchAgents/com.user.ollama-strip-proxy.plist`。在**真实 Terminal**（注意：部分沙箱环境的 `launchctl` 不会真正持久化）执行一次：
@@ -622,16 +620,15 @@ ollama run xxx "你好"
 | IQ2_XXS | 6.77 GB | 11–13 GB | ~12–15 tok/s | 中低 |
 | Q3_K_XL | 12.24 GB | 13–16 GB | ~11–13 tok/s | 中 |
 | Q4_K_M | 15.33 GB | 17–19 GB | ~10–11 tok/s | 高 |
-| Q5_K_M | 18.41 GB | 22–24 GB | ~9.6 tok/s | 很高 |
+| Q5_K_M | 18.41 GB | ~28 GB | ~9.7 tok/s | 很高 |
 | Q6_K_XL | 23.56 GB | 28–30 GB | ~8–9 tok/s | 高 |
 | Q8_K_XL | 29.30 GB | 35–40 GB | ~7–8 tok/s | 最高 |
 
 **实测备注（M5 Pro / 48GB）：**
 - Q5_K_M 首次加载约 6s，后续调用保持内存驻留
 - 生成速度受 prompt 长度影响，短 prompt 更快
-- 上下文 262144 需配合 `OLLAMA_FLASH_ATTENTION=1` + `OLLAMA_KV_CACHE_TYPE=q8_0`，否则内存压力大
-- 短 prompt 更快；上下文超过 100K 后预填充速度下降明显
-- 想让模型常驻内存（避免每次 6 秒重载）：`OLLAMA_KEEP_ALIVE=30m`
+- 上下文 131072 时性能稳定；超过 100K 预填充速度下降
+- `OLLAMA_KEEP_ALIVE=30m` 可避免每次重载
 
 ---
 

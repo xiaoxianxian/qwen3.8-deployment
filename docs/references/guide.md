@@ -48,7 +48,7 @@ lscpu | grep "Model name"
 
 **实测参考（M5 Pro / 48GB）：**
 - Q5_K_M 实际内存占用约 22GB（含系统 + 上下文预留）
-- 生成速度：~9.6 tokens/s
+- 生成速度：~9.7 tokens/s
 - 首次加载：~6s
 
 ### 3. 检查代理配置
@@ -211,11 +211,11 @@ curl -fsSL https://ollama.com/install.sh | sh
 cat > ~/models/Modelfile << 'EOF'
 FROM /Users/你的用户名/models/qwen3.8-27b-Q5.gguf
 FROM /Users/你的用户名/models/mmproj-F16.gguf
-PARAMETER num_ctx 262144
+PARAMETER num_ctx 131072
 EOF
 ```
 > **挂载视觉投影用第二个 `FROM` 行**（不是 `PROJECTOR`，该指令在 Ollama 0.33 已移除；LoRA 才用 `ADAPTER`）。
-> `num_ctx 262144` 为原生上限，覆盖长对话与发图场景，防 400 报错。
+> `num_ctx 131072` 为最佳平衡点，覆盖图片+长历史，防 400 报错。
 >
 > 💡 提示：你可以先用 `ls ~/models/*.gguf` 确认文件名，再替换 Modelfile 中的路径。
 
@@ -525,7 +525,7 @@ ollama rm xxx
 cat > ~/models/Modelfile << 'EOF'
 FROM /Users/xiaota/models/qwen3.8-27b-Q5.gguf
 FROM /Users/xiaota/models/mmproj-F16.gguf
-PARAMETER num_ctx 262144
+PARAMETER num_ctx 131072
 EOF
 ollama create xxx -f ~/models/Modelfile
 ollama run xxx "你好"
@@ -542,11 +542,11 @@ ollama run xxx "你好"
 **修复（让模型具备视觉）：**
 1. 下载同仓库 mmproj（`unsloth/Qwen3.8-27B-GGUF` 内含 `mmproj-F16.gguf`，约 0.85GB）：
    `curl -L -x http://127.0.0.1:7897 -o ~/models/mmproj-F16.gguf "https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/mmproj-F16.gguf"`
-2. Modelfile 用**第二个 `FROM` 行**挂载 mmproj 并 `PARAMETER num_ctx 262144`，重建：
+2. Modelfile 用**第二个 `FROM` 行**挂载 mmproj 并 `PARAMETER num_ctx 131072`，重建：
    ```text
    FROM /path/to/your/qwen3.8-27b-Q5.gguf
    FROM /path/to/your/mmproj-F16.gguf
-   PARAMETER num_ctx 262144
+   PARAMETER num_ctx 131072
    ```
    `ollama rm qwen3.8-local && ollama create qwen3.8-local -f ~/models/Modelfile`
 3. 验证：`ollama show qwen3.8-local` 的 `Capabilities` 出现 `vision` 且有 `Projector (clip)`（约 460M 参数，即 mmproj 已挂载）。实测看图（Ollama 0.32 的 `ollama run` 不支持 `--image`，改用 OpenAI 兼容端点发 base64 图）：把任意图 base64 后 POST 到 `http://localhost:11434/v1/chat/completions`（`content` 里放 `image_url`），模型能从图中读出文字/描述内容即证明视觉打通。
@@ -557,10 +557,10 @@ ollama run xxx "你好"
 
 **现象：** `400 ... exceeds the available context size`；或长对话里本地 27B 响应极慢、WB 报"自定义模型错误"。
 
-**根因：** WB 把整段历史发给本地模型，累计几万 token，Metal 预填充极慢，且旧默认 `num_ctx=32768` 易被突破。
+**根因：** WB 把整段历史发给本地模型，累计几万 token，Metal 预填充极慢，且旧默认 `num_ctx=131072` 易被突破。
 
-**修复（已做 + 可选）：** ①Modelfile `PARAMETER num_ctx 262144`（已写入，拉满原生上限）；
-   **注意图片才是吞 token 大户**：单张 1024px 图约 13 万 token，曾触发
+**修复（已做 + 可选）：** ①Modelfile `PARAMETER num_ctx 131072`（已写入，拉满原生上限）；
+   **注意图片才是吞 token 大户**：单张 1024px 图约 ~1084 tokens，曾触发
    `request (131167 tokens) exceeds the available context size (131072)`，务必拉满并开 KV 缓存量化；②（可选）在 Ollama 前放**智能代理** `~/models/ollama_strip_proxy.py`（默认**放行图片**，并**按 token 估算自动截断**超 `--max-prompt-tokens` 默认 24000 的请求，只留 system+最近若干轮），把 WB 的 `url` 改成 `http://localhost:11435/v1`。
 
 **关键坑：代理必须用 launchd 托管成长驻+自启服务，否则会话一结束进程被回收，下次调用就 502 连接被拒绝。** 用已提供的 plist（在**真实 Terminal** 执行，部分沙箱 `launchctl` 不会真正持久化）：
@@ -583,14 +583,14 @@ launchctl bootstrap "gui/$(id -u)" ~/Library/LaunchAgents/com.user.ollama-strip-
 || IQ2_XXS | 6.77 GB | 11–13 GB | ~12–15 tok/s | 中低 |
 || Q3_K_XL | 12.24 GB | 13–16 GB | ~11–13 tok/s | 中 |
 || Q4_K_M | 15.33 GB | 17–19 GB | ~10–11 tok/s | 高 |
-|| Q5_K_M | 18.41 GB | 22–24 GB | ~9.6 tok/s | 很高 |
+|| Q5_K_M | 18.41 GB | ~28 GB | ~9.7 tok/s | 很高 |
 || Q6_K_XL | 23.56 GB | 28–30 GB | ~8–9 tok/s | 高 |
 || Q8_K_XL | 29.30 GB | 35–40 GB | ~7–8 tok/s | 最高 |
 
 **实测备注（M5 Pro / 48GB）：**
 - Q5_K_M 首次加载约 6s，后续调用保持内存驻留
 - 生成速度受 prompt 长度影响，短 prompt 更快
-- 上下文 262144 需配合 `OLLAMA_FLASH_ATTENTION=1` + `OLLAMA_KV_CACHE_TYPE=q8_0`
+- 上下文 131072 需配合 `OLLAMA_FLASH_ATTENTION=1` + `OLLAMA_KV_CACHE_TYPE=q8_0`
 - 上下文超过 100K 后预填充速度下降明显；`OLLAMA_KEEP_ALIVE=30m` 可避免每次重载
 
 ---
