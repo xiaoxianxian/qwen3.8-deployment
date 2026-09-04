@@ -102,6 +102,29 @@ python3 ~/models/ollama_strip_proxy.py --port 11435 --upstream http://127.0.0.1:
 ```
 然后把客户端 `url` 指向 `http://localhost:11435/v1`（默认放行图片，超 24000 token 自动截断历史）。
 
+## 九、智能分流代理说明（重要，供其他 Agent 维护参考）
+
+### 代理设计价值
+智能分流代理（`~/models/ollama_strip_proxy.py`）的设计逻辑是正确的：
+- **有图片请求** → 自动注入 `reasoning_effort=high`（绕过 xhigh 500 错误）
+- **纯文字请求** → 原样透传，保留调用方自己设定的推理档位
+
+### 为什么 WorkBuddy 不能用
+WorkBuddy 的沙箱进程（sandbox-c，PID 18050）会强制终止在特定端口运行的脚本，导致代理进程无法稳定运行。这不是端口占用问题，而是沙箱的网络拦截机制。
+
+### 其他 Agent 可用
+Hermes、Codex 等没有 WorkBuddy 沙箱限制，可以在那些环境里运行代理（配置指向 11435 端口即可）。
+
+### Ollama 原生支持
+Ollama 0.33.x 已原生支持 `reasoning_effort=high` 参数，实测有效。这意味着：
+- 对于不需要"自动检测图片并注入推理档位"的场景，直接连 Ollama 即可
+- 智能分流代理在当前环境下成为多余的复杂度
+- **未来当 Ollama 修复 xhigh bug 后，代理逻辑需要调整**（仅在用户未指定 reasoning_effort 时才注入）
+
+### 当前配置状态
+- WorkBuddy：直连 Ollama `http://localhost:11434/v1`（无需代理）
+- Hermes/Codex：如需使用代理，配置指向 `http://localhost:11435/v1`
+
 ---
 
 ## 附：已知坑位
