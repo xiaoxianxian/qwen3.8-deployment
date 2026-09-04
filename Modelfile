@@ -1,0 +1,32 @@
+# Qwen3.8-27B Modelfile 模板（Ollama ≥ 0.33）
+# 使用说明：
+#   1. 把下面两处 <你的用户名> 替换成实际路径（如 /Users/zhangsan）
+#      推荐用绝对路径，Ollama 对相对路径支持不稳定
+#   2. 重建模型：ollama create qwen3.8-local -f ~/models/Modelfile
+#
+# ⚠️ 关键语法（Ollama 0.33 起变更，2026-09 验证）：
+#   - 挂载视觉投影 mmproj 必须用「第二个 FROM 行」
+#   - 旧的 `PROJECTOR /path/mmproj.gguf` 写法在 0.33 已失效，会报：
+#     Error: command must be one of "from", "license", "template", ...
+#   - 判断依据：ollama show <模型名> 出现 Projector(clip) 且 Capabilities 含 vision
+
+FROM /Users/<你的用户名>/models/qwen3.8-27b-Q5.gguf
+FROM /Users/<你的用户名>/models/mmproj-F16.gguf
+
+# ── 上下文窗口 ────────────────────────────────────────────
+# 262144 是 Qwen3.8-27B 的原生上限，直接拉满。
+# 注意：图片会消耗大量 token（实测单张 1024px 图 → 约 13 万 token），
+#       设太小会在 Agent 发图时直接 400 报错。
+# 内存不够时可降到 131072 / 65536，但建议配合下方服务环境变量。
+PARAMETER num_ctx 262144
+
+# ── 采样参数（官方推荐值）──────────────────────────────────
+PARAMETER temperature 0.7
+PARAMETER top_p 0.95
+PARAMETER top_k 20
+PARAMETER min_p 0.0
+
+# ── 服务侧配套（不在本文件，需设环境变量，见 setup-guide.md 第八节）──
+#   OLLAMA_KEEP_ALIVE=30m      模型驻留内存 30 分钟，避免每次重载
+#   OLLAMA_FLASH_ATTENTION=1   大幅降低长上下文显存占用
+#   OLLAMA_KV_CACHE_TYPE=q8_0  KV 缓存量化，262K 上下文必备
