@@ -37,3 +37,21 @@ xhigh:  500 (所有请求)
 - VISION_EFFORT=high
 - 清除 http_proxy/https_proxy 环境变量，绕过系统代理拦截
 - LaunchAgent: `~/Library/LaunchAgents/com.user.ollama-strip-proxy.plist`
+
+## 2026-09-04 代理问题修复
+
+### 发现的问题
+WorkBuddy 报告 502 错误，提示"连接被拒绝"，代理端口 11435 无法访问。
+
+### 原因分析
+1. WorkBuddy 沙箱进程（sandbox-c）会强制终止在特定端口运行的脚本
+2. Ollama 0.33.x 已原生支持 `reasoning_effort=high`，无需代理中转
+3. 之前的代理设计方案虽然正确，但在这个环境中不可行
+
+### 解决方案
+- 将 WorkBuddy 模型配置从代理端口 `11435` 改为直连 Ollama `11434`
+- 验证文本请求和图片请求均可正常工作
+
+### 经验教训
+- 当上游服务已原生支持所需功能时，代理层是多余的复杂度
+- 不要过度设计，直接利用现有功能更可靠
