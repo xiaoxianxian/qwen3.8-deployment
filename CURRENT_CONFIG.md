@@ -1,6 +1,6 @@
 # 本地 Qwen3.8-27B 配置快照
 
-> 最后更新：2026-09-03（Ollama 0.33.2 / M5 Pro 48GB 实测验证）
+> 最后更新：2026-09-04（Ollama 0.33.2 / M5 Pro 48GB 实测验证 · 第 3 轮调优）
 > 本机实际生效配置，重建或迁移时以本文件为准。
 
 ## 一、模型信息
@@ -11,16 +11,17 @@
 | 量化 | Q5_K_M |
 | 体积 | 20 GB（含视觉投影） |
 | 架构 | qwen35 / 27.3B 参数 |
-| 上下文 | **262144 tokens**（原生上限，已拉满） |
+| 上下文 | **131072 tokens**（实测性价比最佳，兼顾速度与图片容错） |
 | 能力 | tools / thinking / completion / **vision** |
 | 视觉投影 | CLIP，460.73M 参数 |
 
 ## 二、生效的 Modelfile
 
 ```dockerfile
-FROM /Users/xiaota/models/qwen3.8-27b-Q5.gguf
-FROM /Users/xiaota/models/mmproj-F16.gguf
-PARAMETER num_ctx 262144
+FROM /Users/xiaota/.ollama/models/blobs/sha256-a83a4b635449f3d6b0feedba6087894f0282d597d868c8bdae83880b98e472cf
+FROM /Users/xiaota/.ollama/models/blobs/sha256-cbb841a9ee0636b2ec172f5bb8df2ea8dfeb01e90fe7c6126581d662a0b4e43e
+TEMPLATE {{ .Prompt }}
+PARAMETER num_ctx 131072
 PARAMETER temperature 0.7
 PARAMETER top_p 0.95
 PARAMETER top_k 20
@@ -69,10 +70,10 @@ ollama show qwen3.8-local
 
 | 指标 | 数值 |
 |------|------|
-| 生成速度 | ~9.6 tok/s |
+| 生成速度 | ~9.7 tok/s |
 | 首次加载 | ~6 s |
-| 常驻内存占用 | ~22 GB |
-| 图片理解（1024px 单图） | ~15–23 s / 次 |
+| 常驻内存占用 | ~28 GB |
+| 图片理解（1024px 单图 + 思考模式） | ~75–80 s / 次（含约 700 token 思考时间） |
 
 ## 七、Agent 工具配置
 
@@ -127,11 +128,16 @@ Ollama 0.33.x 已原生支持 `reasoning_effort=high` 参数，实测有效。�
 
 ---
 
-## 附：已知坑位
+## 附：已知坑位（2026-09-04 修正）
 
-1. **图片吃掉海量 token**：单张 1024px 图实测约 13 万 token，曾触发
-   `request (131167 tokens) exceeds the available context size (131072)`。
-   解法 → `num_ctx` 拉满 262144 + 开 KV 缓存量化。
-2. **`ollama run` 不支持 `--image`**：测图要走 OpenAI 兼容端点发 base64。
-3. **回复内容为空**：thinking 模式把 `max_tokens` 吃光了，把额度调大即可。
-4. **`PROJECTOR` 指令失效**：Ollama 0.33 起改用第二个 `FROM` 行。
+1. **图片 token 误解**：旧文档写"单张 1024px 图约 13 万 token"是错的。
+   实测一张 1024×1024 纯色 PNG 仅 ~1084 tokens；复杂内容也不会超过几万。
+   真正触发 400 `exceeds context size` 是「图片 + 长历史」总和超 num_ctx。
+   → 把 num_ctx 从 65536 升到 131072 即可。
+2. **回复内容为空（thinking 模式）**：Qwen3.8 默认开启推理思考，
+   思考会先消耗 `num_predict` 预算；如果调用方只传 60 token，思考就吃光了，content 字段为空。
+   → 调用时 `options.num_predict ≥ 2000`，或传 `think=false` 关闭思考。
+3. **`num_ctx=262144` 太慢**：实测会把模型膨胀到 38GB、速度降至 ~3 tok/s。
+   `num_ctx=131072` 在 48GB 机器上 100% GPU、~9.7 tok/s，且足够装下图片+长历史。
+4. **`ollama run` 不支持 `--image`**：测图要走 OpenAI 兼容端点发 base64。
+5. **`PROJECTOR` 指令失效**：Ollama 0.33 起改用第二个 `FROM` 行。
