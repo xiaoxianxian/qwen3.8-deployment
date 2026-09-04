@@ -13,6 +13,24 @@
 FROM /Users/<你的用户名>/models/qwen3.8-27b-Q5.gguf
 FROM /Users/<你的用户名>/models/mmproj-F16.gguf
 
+# ── 聊天模板（⚠️ 必须显式写，否则图片必报错）──────────────
+# 该 GGUF 不内嵌 chat_template，Ollama 会退回默认裸模板 `{{ .Prompt }}`，
+# 导致走 OpenAI /v1 端点发图时报：No data iterator found for token: <|video_pad|>
+# 现象：WorkBuddy 等走 /v1/chat/completions 的客户端发图直接 400 失败。
+# 下面这份 Qwen 多模态模板会让 Ollama 把图像张量正确绑到 <|image_pad|> 占位符。
+# （Ollama 模板引擎不支持数组索引/切片，故用 {{ .Content }} 让引擎自动渲染多模态内容）
+TEMPLATE """{{- if .System }}<|im_start|>system
+{{ .System }}<|im_end|>
+{{ end }}
+{{- range .Messages }}
+{{- if eq .Role "user" }}<|im_start|>user
+{{ .Content }}<|im_end|>
+{{ else if eq .Role "assistant" }}<|im_start|>assistant
+{{ if .Content }}{{ .Content }}{{ end }}{{ if .ReasoningContent }}<think>{{ .ReasoningContent }}</think>{{ end }}<|im_end|>
+{{ end }}
+{{- end }}<|im_start|>assistant
+{{ if .ReasoningContent }}<think>{{ .ReasoningContent }}</think>{{ end }}{{ .Response }}"""
+
 # ── 上下文窗口 ────────────────────────────────────────────
 # num_ctx=131072 是实测最佳平衡点：
 #   - 262144：模型膨胀到 38GB，速度降至 ~3 tok/s（太慢）
