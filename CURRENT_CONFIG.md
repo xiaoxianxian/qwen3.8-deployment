@@ -20,7 +20,17 @@
 ```dockerfile
 FROM /Users/xiaota/.ollama/models/blobs/sha256-a83a4b635449f3d6b0feedba6087894f0282d597d868c8bdae83880b98e472cf
 FROM /Users/xiaota/.ollama/models/blobs/sha256-cbb841a9ee0636b2ec172f5bb8df2ea8dfeb01e90fe7c6126581d662a0b4e43e
-TEMPLATE {{ .Prompt }}
+TEMPLATE """{{- if .System }}<|im_start|>system
+{{ .System }}<|im_end|>
+{{ end }}
+{{- range .Messages }}
+{{- if eq .Role "user" }}<|im_start|>user
+{{ .Content }}<|im_end|>
+{{ else if eq .Role "assistant" }}<|im_start|>assistant
+{{ if .Content }}{{ .Content }}{{ end }}{{ if .ReasoningContent }}<think>{{ .ReasoningContent }}</think>{{ end }}<|im_end|>
+{{ end }}
+{{- end }}<|im_start|>assistant
+{{ if .ReasoningContent }}<think>{{ .ReasoningContent }}</think>{{ end }}{{ .Response }}"""
 PARAMETER num_ctx 131072
 PARAMETER temperature 0.7
 PARAMETER top_p 0.95
@@ -141,3 +151,10 @@ Ollama 0.33.x 已原生支持 `reasoning_effort=high` 参数，实测有效。�
    `num_ctx=131072` 在 48GB 机器上 100% GPU、~9.7 tok/s，且足够装下图片+长历史。
 4. **`ollama run` 不支持 `--image`**：测图要走 OpenAI 兼容端点发 base64。
 5. **`PROJECTOR` 指令失效**：Ollama 0.33 起改用第二个 `FROM` 行。
+6. **【最致命】聊天模板缺失导致发图 400 `<|video_pad|>` 报错**：
+   该 GGUF **不内嵌 chat_template**，Ollama 会退回默认裸模板 `{{ .Prompt }}`。
+   走 OpenAI `/v1/chat/completions` 端点发图时，图像占位符 `<|video_pad|>` 被塞进 prompt
+   却没绑定真实图像张量，报 `No data iterator found for token: <|video_pad|>`（WorkBuddy 就走这条路径）。
+   → **必须在 Modelfile 显式写入 Qwen 多模态模板**（见上方"二、生效的 Modelfile"）。
+   注意：Ollama 模板引擎不支持数组索引/切片，用 `{{ .Content }}` 让引擎自动渲染多模态内容即可；
+   写带 `.Content[0]` 或 `slice` 的复杂模板会报 `bad character U+005B '['` 解析失败。

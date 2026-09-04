@@ -211,6 +211,21 @@ curl -fsSL https://ollama.com/install.sh | sh
 cat > ~/models/Modelfile << 'EOF'
 FROM /Users/你的用户名/models/qwen3.8-27b-Q5.gguf
 FROM /Users/你的用户名/models/mmproj-F16.gguf
+
+# ⚠️ 必须显式写模板：GGUF 不内嵌 chat_template，不写会退回裸 {{ .Prompt }}，
+# 导致 /v1 端点发图报 "No data iterator found for token: <|video_pad|>"
+TEMPLATE """{{- if .System }}<|im_start|>system
+{{ .System }}<|im_end|>
+{{ end }}
+{{- range .Messages }}
+{{- if eq .Role "user" }}<|im_start|>user
+{{ .Content }}<|im_end|>
+{{ else if eq .Role "assistant" }}<|im_start|>assistant
+{{ if .Content }}{{ .Content }}{{ end }}{{ if .ReasoningContent }}<think>{{ .ReasoningContent }}</think>{{ end }}<|im_end|>
+{{ end }}
+{{- end }}<|im_start|>assistant
+{{ if .ReasoningContent }}<think>{{ .ReasoningContent }}</think>{{ end }}{{ .Response }}"""
+
 PARAMETER num_ctx 131072
 EOF
 ```

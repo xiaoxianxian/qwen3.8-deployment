@@ -71,6 +71,22 @@ wget https://huggingface.co/unsloth/Qwen3.8-27B-GGUF/resolve/main/mmproj-F16.ggu
 ```dockerfile
 FROM /Users/<你的用户名>/models/qwen3.8-27b-Q5.gguf
 FROM /Users/<你的用户名>/models/mmproj-F16.gguf
+
+# ⚠️ 必须显式写聊天模板！该 GGUF 不内嵌 chat_template，
+# 不写的话 Ollama 退回裸模板 {{ .Prompt }}，走 /v1 发图会报
+# "No data iterator found for token: <|video_pad|>"。
+TEMPLATE """{{- if .System }}<|im_start|>system
+{{ .System }}<|im_end|>
+{{ end }}
+{{- range .Messages }}
+{{- if eq .Role "user" }}<|im_start|>user
+{{ .Content }}<|im_end|>
+{{ else if eq .Role "assistant" }}<|im_start|>assistant
+{{ if .Content }}{{ .Content }}{{ end }}{{ if .ReasoningContent }}<think>{{ .ReasoningContent }}</think>{{ end }}<|im_end|>
+{{ end }}
+{{- end }}<|im_start|>assistant
+{{ if .ReasoningContent }}<think>{{ .ReasoningContent }}</think>{{ end }}{{ .Response }}"""
+
 PARAMETER num_ctx 131072
 PARAMETER temperature 0.7
 PARAMETER top_p 0.95
