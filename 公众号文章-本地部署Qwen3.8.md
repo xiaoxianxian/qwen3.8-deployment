@@ -262,6 +262,8 @@ memory_pressure | grep "Swap"
 
 ---
 
+**🔗 查看原文**：[GitHub 开源仓库](https://github.com/xiaoxianxian/qwen3.8-local-deployment)
+
 📱 部署包获取方式：后台回复【qwen3.8】
 
 Jason 的落地思考
