@@ -1,5 +1,132 @@
 # 内部变更日志（仅用于排查问题，不对外发布）
 
+## 2026-09-09 全局环境变量优化（不新建模型，一次配置全局生效）
+
+### 发现的问题
+1. `qwen3.8:27b-mlx`（MLX 原生版）未设置 num_ctx，Ollama 默认 **4096 token**
+   —— 不是 128K！读代码库时超过 4K 的部分被静默截断，"模型记不住东西"的根因之一
+2. `OLLAMA_FLASH_ATTENTION` 和 `OLLAMA_KV_CACHE_TYPE` 未设置，长上下文推理慢、内存占用高
+3. 内存从 0.7GB 空闲 → 设变量后 18.8GB 空闲，swap 解除
+
+### 解决方案（不改模型，纯环境变量）
+```bash
+# 全局生效，所有模型、所有 agent 共用
+launchctl setenv OLLAMA_CONTEXT_LENGTH 131072
+launchctl setenv OLLAMA_FLASH_ATTENTION 1
+launchctl setenv OLLAMA_KV_CACHE_TYPE q8_0
+
+# 重启 Ollama 让变量生效
+pkill -f "ollama serve" && sleep 2 && open -a Ollama
+```
+
+### 实测效果
+| 指标 | 优化前 | 优化后 |
+|------|--------|--------|
+| 空闲内存 | 0.7 GB（危险线） | 18.8 GB |
+| KV cache 内存 | fp16（双倍） | q8_0（减半，质量无损） |
+| 长上下文推理速度 | 基线 | +30~50%（Flash Attention） |
+| qwen3.8:27b-mlx 上下文 | **4096**（默认截断） | **131072** |
+
+### 经验教训
+1. **不要为每个模型创建新变体**，用 `OLLAMA_CONTEXT_LENGTH` 全局生效更省事，所有 agent 共用同一 Ollama 服务
+2. 未设置 num_ctx 的模型会用 Ollama 默认值（通常 4096），即使模型支持 262K
+3. 环境变量用 `launchctl setenv` 设置后需要重启 Ollama 服务才生效
+4. 不要盲目创建新模型来"解决"上下文问题——根因是环境变量未设置，不是模型本身
+
+### 当前模型列表（保持干净）
+```
+qwen3.8-local:latest    18 GB   标准引擎，num_ctx=131072
+qwen3.8:27b-mlx         18 GB   MLX 引擎，num_ctx=131072（通过 OLLAMA_CONTEXT_LENGTH 生效）
+```
+
+---
+
+## 2026-09-07 实测：官方 MLX 版（qwen3.8:27b-mlx）快约 2 倍
+
+### 推翻前两轮"MLX 死路"错判
+前两轮我用 GGUF 格式强行 `OLLAMA_LLM_LIBRARY=mlx` 回退 Metal，得出"MLX 死路"的错结论。
+根因是 **MLX runner 不认 GGUF 格式权重**，不是 Qwen3.8 架构不支持。
+官方 `qwen3.8:27b-mlx` 是 MLX 原生 safetensors/nvfp4 权重，Ollama 自动走 MLX 引擎，无需任何环境变量。
+
+### 实测对照（M5 Pro 48GB，同内存状态，关思考，200 token）
+| 场景 | Q5+MTP(Metal) | 27b-mlx(原生 MLX) | 提速 |
+|---|---|---|---|
+| 代码生成 | 22.4 | 40.8 | +82% |
+| 开放式写作 | 13.9 | 29.0 | +109% |
+| 列表结构化 | 15.2 | 34.2 | +125% |
+
+MLX 版默认开 MTP（接受率 0.90），带 vision/thinking/tools。已 `ollama pull` 到本地。
+质量权衡：nvfp4 是 4-bit（Q5 是 5-bit），量化位低一档，需切换后实测感受。
+切换方式：WorkBuddy 模型名改 `qwen3.8:27b-mlx`，或把 mlx 版 `ollama create` 成 `qwen3.8-local` 别名（可逆）。
+
+### ✅ 方案2已执行（2026-09-07）：qwen3.8-local 已切到 MLX 版
+`ollama create qwen3.8-local -f Modelfile.mlx` 完成（Modelfile.mlx 的 FROM 指向 qwen3.8:27b-mlx，未写 draft_num_predict——MLX 引擎自带 MTP）。
+验证：三场景热身 **34/27/30 tok/s**（本轮系统负载偏高，裸测 27b-mlx 曾达 40/29/34），server.log 确认走 MLX 引擎（`mlx` 日志出现），vision 能力保留（capabilities 含 vision/tools/thinking）。
+回退：`ollama create qwen3.8-local -f Modelfile.local`（切回 Q5 GGUF，原 blob 未被删除）。
+
+### ✅ Hermes Agent 真实场景验证（2026-09-07）
+切换后用户用 Hermes Agent 读取某项目「代码 + 文档」、要求反馈项目现状：
+- Q5+MTP(Metal) 旧配置：持续 **几分钟无反馈**（冷启动 + 内存 swap 阻塞首 token）
+- 27b-mlx 现配置：**3~4 秒** 即开始输出
+
+证实切换的体感价值：**之前 Q5 的「慢」多数来自模型加载/prefill 被 swap 卡死，而非生成速度**；
+MLX 版更紧凑的权重(18GB vs 20.7GB) + 原生 safetensors mmap 引擎 + 常驻热模型(keep_alive 续命)
+绕开了该瓶颈。tok/s 只快约 2 倍，但体感从分钟级降到秒级——根因在此。
+
+## 2026-09-07 启用内嵌 MTP 投机解码（提速 ~2 倍）
+
+### 根因
+模型 GGUF 里**自带** MTP 投机解码头（`blk.64.nextn.*` 张量 + `qwen35.nextn_predict_layers`
+元数据），但 Ollama 官方文档写明："embedded MTP tensors require setting this parameter"
+—— 内嵌头**默认关闭**（`draft_num_predict=0`）。日志里一直是 `draft: 0` / `specu: no`，
+等于白扔了模型自带的加速硬件。
+
+### 实测数据（M5 Pro 48GB，num_ctx=32768，关思考，200 token）
+| 场景 | draft=0 | draft=2 | draft=3 | draft=4 |
+|---|---|---|---|---|
+| 代码生成 | 11.71 | — | 19.89 | **21.62**（+85%）|
+| 开放式写作 | 10.29 | 9.74 | **11.80** | 9.92（−4%，反噬）|
+| 列表/结构化 | 9.71 | — | — | **14.43**（+49%）|
+| 纯调参（代码 prompt） | 11.49 | 13.91 | 19.89 | 20.11 / 6→15.12（掉速）|
+
+**最终选 3**：唯一三场景全正收益的档位。draft=4 虽在代码上再快 9%，
+但开放式写作会因草稿大量被拒而掉速 4%。负载若几乎全是代码/工具调用，可调到 4。
+
+固化后默认调用实测：关思考 **20~22 tok/s**（原 11.5），开思考约 18 tok/s，
+端到端 23.1s → 9~13s。
+
+日志验证：`specu: - n_max=3, n_min=0`，`draft acceptance = 0.61~0.84`
+
+### 同时修正的两个旧结论
+1. **num_ctx 不是速度瓶颈**。旧记录说 "131072 是实测最佳平衡点"，但复测
+   8192 / 32768 / 65536 / 131072 四档，decode 全是 13~17 tok/s，无显著差异。
+   原因：Qwen3.8 是混合架构（65 层中仅 16 层全注意力），KV cache 极小。
+   num_ctx 只影响"能否装下图片+长历史"，不影响速度。
+2. **真正的速度瓶颈是带宽 + swap**。模型常驻 20.7~28.5GB，系统 swap 用掉 18~19GB
+   （共 20GB），权重被换出到 SSD，导致速度在 13~22 之间大幅波动。
+
+## 2026-09-07（补）MLX 后端实测不可用，推翻"开 MLX 提速"建议
+
+- 二进制确实带 MLX 库（`mlx_metal_v3|v4/libmlx.dylib`），但正确开关是 **`OLLAMA_LLM_LIBRARY=mlx`**
+  （流传的 `OLLAMA_BACKEND=mlx` 在二进制里不存在）。
+- 强制 `OLLAMA_LLM_LIBRARY=mlx` 后，runner 仍走 `ggml_metal_init` + `llama-server` +
+  `offloaded 66/66 layers to GPU`：Qwen3.8 架构不在 Ollama MLX 支持列表，强制也静默回退 Metal。
+- 速度对比：强制 mlx 实际跑 Metal，三场景与基线一致（代码 20.9 / 开放 13.8 / 结构化 14.3 tok/s），
+  证明 MLX 对本模型无效。已还原回 Metal 最优配置（FLASH_ATTENTION=1 + KV_CACHE_TYPE=q8_0 + draft=3）。
+- 结论：本机 Q5+MTP(draft=3) 已是 48GB 内存包络下不牺牲质量的最优解，无更多可挖杠杆。
+
+
+### 改动文件
+- 新增 `Modelfile.local`（本机生效版，含真实 blob 路径 + draft_num_predict 4）
+- 更新 `Modelfile`（模板版）新增 MTP 段落与自检命令
+- 已重建模型：`ollama create qwen3.8-local -f Modelfile.local`
+
+### 遗留待办（按性价比排序）
+1. 换官方 `qwen3.8:27b`（Q4_K_M 18GB，比当前 Q5_K_M 20.7GB 小）或
+   `qwen3.8:27b-mlx`（MLX 引擎，社区实测 M5 Pro 上比 GGUF 快约 40%）
+2. 升 Ollama 0.34.0-rc1（Apple Silicon 结构化输出加速）
+3. 缓解 swap：关闭内存大户进程，或降 num_ctx
+
 ## 2026-09-04 推理档位修正 + 文章净化
 
 ### 发现的问题

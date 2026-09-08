@@ -42,23 +42,6 @@ TEMPLATE """{{- if .System }}<|im_start|>system
 # 思考模式会把 token 预算全部耗尽在 thinking 字段，content 返回空字符串。
 PARAMETER num_ctx 131072
 
-# ── MTP 投机解码（⚠️ 2026-09-07 新增，单项最大提速）──────────
-# Qwen3.8 训练时自带 MTP（Multi-Token Prediction）头，GGUF 中以 blk.64.nextn.* 保留。
-# Ollama 官方文档原话："embedded MTP tensors require setting this parameter"
-#   —— 内嵌 MTP 头必须显式设置才生效，默认 0 = 关闭，等于白扔模型自带的加速硬件。
-# 判断你的 GGUF 有没有这个头（有输出=有）：
-#   python3 -c "import re;print(set(m.group(0) for m in re.finditer(rb'[a-zA-Z0-9_.]{2,80}nextn[a-zA-Z0-9_.]{0,40}', open('模型.gguf','rb').read(6*1024*1024))))"
-# M5 Pro 48GB 实测（num_ctx=32768，关思考，200 token）：
-#   场景         draft=0   draft=3   draft=4
-#   代码生成      11.71     19.89     21.62   ← 4 最快(+85%)
-#   开放式文本    10.29     11.80      9.92   ← 4 反而掉速(-4%)
-#   列表/结构化    9.71       —        14.43   ← 4 最快(+49%)
-# 推荐 3：唯一「全场景正收益」档位（代码 +70%、开放式 +15%）。
-# 负载几乎全是代码/工具调用/JSON 时可调到 4 再榨 9%；大于 6 会明显掉速。
-# 无损加速：draft token 只有被主模型确认才保留，不改变输出分布。
-# 生效验证：server.log 应出现 `specu: - n_max=3` 和 `draft acceptance = 0.6~0.85`
-PARAMETER draft_num_predict 3
-
 # ── 采样参数（官方推荐值）──────────────────────────────────
 PARAMETER temperature 0.7
 PARAMETER top_p 0.95

@@ -48,7 +48,7 @@
   <!-- 开篇段落 -->
   <p>最近Qwen3.8很火，本地化部署的效果评价很高，但是很多人纠结自己的电脑是否能够跑得起来，不知道应该部署哪个版本。</p>
   <p>我也查了不少博主分享的部署教程，要么步骤不够清晰，要么按步骤来但是问题不断。作为一个坚信实践出真知的产品人，经过几天的全方位试错和对比，我亲手摸索出来了一套本地部署 Qwen3.8 的最佳实践方案，配合 AI Agent 工具链使用，让你也可以拥有本地运行的强大模型。</p>
-  <p>过程我踩了不少坑，今天把完整的经验毫无保留地分享出来——无论是技术背景强的朋友，还是想本地跑大模型的门外汉，都能照着做。</p>
+  <p>过程中踩了不少坑，这里把完整的经验整理出来——无论技术背景强弱，照着做都能跑起来。</p>
 
   <!-- 第一章 -->
   <h2>一、为什么我要把大模型"装"进自己电脑？</h2>
@@ -78,7 +78,7 @@
       <tr><th>模型</th><th>参数量</th><th>优点</th><th>缺点</th></tr>
     </thead>
     <tbody>
-      <tr class="highlight-row"><td>Qwen3.8-27B</td><td>27B</td><td>国产、多模态、中文强</td><td>需要较大内存</td></tr>
+      <tr><td>Qwen3.8-27B</td><td>27B</td><td>国产、多模态、中文强</td><td>需要较大内存</td></tr>
       <tr><td>Qwen3.8-14B</td><td>14B</td><td>轻量级</td><td>性能略弱</td></tr>
       <tr><td>Llama 3.3-70B</td><td>70B</td><td>性能最强</td><td>需要 128GB+ 内存</td></tr>
       <tr><td>Phi-4</td><td>14B</td><td>体积小</td><td>中文能力一般</td></tr>
@@ -102,9 +102,6 @@
     - <strong>Q5</strong>：每个参数用 5 位（<strong>性价比甜点</strong>，质量损失约 2%）<br>
     - <strong>Q6</strong>：每个参数用 6 位（质量接近原模型）<br>
     - <strong>Q8</strong>：每个参数用 8 位（几乎无损，但体积翻倍）<br><br>
-    <strong>后面的 _K_M 又是什么意思？</strong><br>
-    - <strong>K</strong>：代表 K-quants 算法，比旧版更聪明地分配位数（注意力层多给点，其他层少给点）<br>
-    - <strong>M</strong>（Medium）：中等压缩，比 K_S 略大但质量更好<br><br>
     <strong>为啥我选 Q5_K_M？</strong><br>
     因为它是<strong>质量和内存的甜蜜点</strong>——体积只有原模型的 ~44%，但质量损失不到 2%。如果你内存够（48GB+），可以直接上 Q6_K 或 Q8；如果内存紧张，Q4_K_M 也能跑，但代码和推理能力会打折扣。
   </div>
@@ -128,13 +125,16 @@
 
   <div class="tip tip-warn">
     ⚠️ <strong>第一个大坑来了！</strong><br>
-    Ollama 官方的 <code>qwen3.8:27b</code> 模型是<strong>纯文本版</strong>，不支持图片理解（vision）。如果你需要多模态能力，必须自己从 HuggingFace 下载 GGUF 格式的模型文件，然后手动创建 Modelfile。
+    Ollama 官方的 <code>qwen3.8:27b</code> 模型是<strong>纯文本版</strong>，不支持图片理解（vision）。如果你需要多模态能力，有两种方案：
+    - <strong>方案 A</strong>：自己从 HuggingFace 下载 GGUF 格式的模型文件，然后手动创建 Modelfile
+    - <strong>方案 B（推荐）</strong>：直接用官方 MLX 原生版，一条命令搞定
   </div>
 
   <h3>第二步：下载模型文件</h3>
 
-  <p>从 HuggingFace 下载两个文件，放到你喜欢的目录（我选的是 <code>~/models/</code>）：</p>
+  <p>有两种拿模型的方式，推荐 <strong>方案 B</strong>（官方 MLX 原生版，最快、最简单）。</p>
 
+  <p><strong>方案 A：下载 GGUF 文件（约 18GB + 885MB）</strong></p>
   <table>
     <thead><tr><th>文件</th><th>大小</th><th>作用</th></tr></thead>
     <tbody>
@@ -142,28 +142,34 @@
       <tr><td>mmproj-F16.gguf</td><td>约 885 MB</td><td>视觉投影器，让模型「看得见」</td></tr>
     </tbody>
   </table>
-
   <p>下载地址：<a href="https://huggingface.co/unsloth/Qwen3.8-27B-GGUF" target="_blank" style="color:#ff6b35;">unsloth/Qwen3.8-27B-GGUF · HuggingFace</a></p>
+
+  <p><strong>方案 B（推荐）：官方 MLX 原生版（约 18GB，一条命令）</strong></p>
+  <pre><code>ollama pull qwen3.8:27b-mlx</code></pre>
+  <p>这是 Apple Silicon 原生的 MLX 权重（nvfp4 量化），<strong>自带 vision + 思考 + 工具调用 + MTP 投机解码</strong>，Ollama 加载时自动走原生 MLX 引擎，比 GGUF + Metal 后端再快约 2 倍。不需要自己下 GGUF、也不需要手写多模态模板。质量上 nvfp4 是 4-bit（Q5 是 5-bit），但官方优化量化损失可控，日常使用几乎无感。</p>
 
   <h3>第三步：创建 Modelfile（关键！）</h3>
 
-  <p>在 <code>~/models/</code> 目录下创建一个叫 <code>Modelfile</code> 的文件（注意：没有后缀名！）：</p>
-  <pre><code># 本地 Qwen3.8-27B 部署配置
-# 如需重建模型，修改下方路径后执行：
-# ollama create qwen3.8-local -f ~/models/Modelfile
+  <p><strong>方案 B（推荐）</strong>——MLX 原生版，超简单：</p>
+  <pre><code># 本地 Qwen3.8-27B 部署配置（推荐：官方 MLX 原生版）
+# 重建：ollama create qwen3.8-local -f ~/models/Modelfile
 
-FROM /path/to/your/models/qwen3.8-27b-Q5.gguf
+FROM qwen3.8:27b-mlx
+PARAMETER num_ctx 131072</code></pre>
+  <p>MLX 原生版自带聊天模板和视觉投影，<code>FROM</code> 官方标签即可，不用再配 <code>TEMPLATE</code> 或第二个 <code>FROM</code>。</p>
+
+  <p><strong>方案 A</strong>——Q5_K_M GGUF，需要完整模板：</p>
+  <pre><code>FROM /path/to/your/models/qwen3.8-27b-Q5.gguf
 FROM /path/to/your/models/mmproj-F16.gguf   # ← 视觉投影，用第二个 FROM
-PARAMETER num_ctx 65536</code></pre>
+PARAMETER num_ctx 131072
+PARAMETER draft_num_predict 3   # ← MTP 投机解码，必须显式开（见第七章）</code></pre>
 
   <div class="tip">
-    💡 <strong>小贴士：</strong><code>num_ctx 65536</code> 是 48GB 机器的甜点——够用且最快。<br>
-      <strong>别盲目拉满 262144！</strong>实测下来，262K 上下文的 KV 缓存会吃掉额外 ~15GB，
-      把模型权重挤出 GPU（只留 5% GPU / 95% CPU），图片请求耗时从 ~14s 飙升到 50s+，
-      导致客户端等不及直接超时。<br>
-      一张 1024×1024 的图确实要约 13 万 token，65536 上下文勉强够（单张图 + 少量对话）。
-      如需更多对话历史，请搭配下方第六节的<strong>智能分流代理</strong>。<br>
-      ⚠️ 挂载视觉投影要用<strong>第二个 <code>FROM</code> 行</strong>，Ollama 0.33 已不再支持 <code>PROJECTOR</code> 指令。
+    💡 <strong>小贴士：</strong><br>
+    - <strong><code>num_ctx 131072</code> 是 48GB 机器的最佳平衡点</strong>——够装下「图片 + 长对话历史」，且 100% 跑在 GPU 上。别盲目拉满到 262144！实测 262K 的 KV 缓存会吃掉额外 ~10GB，把模型权重挤出 GPU（只留 5% GPU / 95% CPU），图片请求耗时从 ~24s 飙升到 50s+，导致客户端等不及直接超时。<br>
+    - <strong>一张 1024×1024 的图实测仅约 1084 token</strong>（不是网上传的「13 万」）。旧文档那个数字害我踩了大坑，详见第六章坑 4。400 报错真正的触发条件是「图片 + 长对话历史」总和超 num_ctx，不是单张图吃掉预算。<br>
+    - 挂载视觉投影要用<strong>第二个 <code>FROM</code> 行</strong>，Ollama 0.33 已不再支持 <code>PROJECTOR</code> 指令。<br>
+    - <strong>MTP 投机解码默认关闭</strong>，必须显式写 <code>PARAMETER draft_num_predict 3</code> 才会生效（这是最大的免费提速，见第七章）。
   </div>
 
   <p>创建模型：</p>
@@ -177,7 +183,7 @@ ollama list
 ollama run qwen3.8-local "你好，请用一句话介绍你自己"
 
 # 测试图片理解（发一张图给模型看）
-ollama run <strong>不支持</strong> <code>--image</code>，测图要走 OpenAI 兼容端点发 base64，
+ollama run 不支持 --image，测图要走 OpenAI 兼容端点发 base64，
       脚本见文末「避坑」一节</code></pre>
 
   <div class="tip tip-success">✅ 看到模型正常回复，说明部署成功！🎉</div>
@@ -197,7 +203,7 @@ ollama run <strong>不支持</strong> <code>--image</code>，测图要走 OpenAI
   <pre><code>providers:
   ollama:
     name: Ollama (Local)
-    base_url: http://localhost:11435/v1    # ← 走智能代理，非直连
+    base_url: http://localhost:11434/v1    # ← 直连 Ollama（无需任何代理）
     model: qwen3.8-local:latest
     discover_models: true</code></pre>
 
@@ -214,10 +220,10 @@ ollama run <strong>不支持</strong> <code>--image</code>，测图要走 OpenAI
     <thead><tr><th>问题</th><th>原因</th><th>解决方案</th></tr></thead>
     <tbody>
       <tr><td><code>no models advertised</code></td><td>Ollama 没启动或端口不对</td><td>运行 <code>ollama list</code> 确认服务正常</td></tr>
-      <tr><td><code>context length exceeded</code></td><td>图片或对话超上下文（单张图就约13万token）</td><td><strong>num_ctx 65536</strong> + 搭配智能代理（第六节）</td></tr>
-      <tr><td>图片识别失败</td><td>没挂上 mmproj 投影</td><td>确认 Modelfile 用<strong>第二个 <code>FROM</code> 行</strong>挂载（<code>PROJECTOR</code> 新版已失效）</td></tr>
-      <tr><td>速度很慢</td><td>num_ctx 拉太大导致模型被挤出 GPU</td><td>改成 65536，别用 262144</td></tr>
-      <tr><td>图片请求 499 超时</td><td>没走代理，xhigh 推理对图片太慢</td><td>配置智能代理，base_url 指向 <strong>11435</strong>（见第六节）</td></tr>
+      <tr><td><code>context length exceeded</code></td><td>图片或对话超上下文</td><td><strong>num_ctx 131072</strong>（图片 + 历史总和别超它）</td></tr>
+      <tr><td>图片识别失败</td><td>没挂上 mmproj 投影</td><td>方案 A 确认 Modelfile 用<strong>第二个 <code>FROM</code> 行</strong>挂载；方案 B 的 MLX 版自带，不用配</td></tr>
+      <tr><td>速度只有 ~11 tok/s</td><td>MTP 投机解码没开</td><td>Modelfile 加 <code>draft_num_predict 3</code> 或确认用的是 MLX 版</td></tr>
+      <tr><td>回复内容为空</td><td>thinking 模式吃掉预算</td><td>调用方传 <code>num_predict ≥ 2000</code> 或 <code>think=false</code></td></tr>
     </tbody>
   </table>
 
@@ -225,22 +231,24 @@ ollama run <strong>不支持</strong> <code>--image</code>，测图要走 OpenAI
   <h2>五、实测性能数据</h2>
   <p>在 M5 Pro + 48GB 的配置下，实测表现如下：</p>
   <table>
-    <thead><tr><th>指标</th><th>数值</th><th>评价</th></tr></thead>
+    <thead><tr><th>指标</th><th>Q5_K_M + MTP（Metal）</th><th>27b-mlx（原生 MLX，推荐）</th></tr></thead>
     <tbody>
-      <tr><td>生成速度</td><td>~9.6 tok/s</td><td>流畅</td></tr>
-      <tr><td>首次响应延迟</td><td>~6 秒</td><td>可接受</td></tr>
-      <tr><td>内存占用</td><td>~22 GB</td><td>正常</td></tr>
-      <tr><td>上下文窗口</td><td>65536 tokens</td><td>最佳平衡（GPU 100%）</td></tr>
-      <tr><td>多模态支持</td><td>✅ 支持</td><td>完美</td></tr>
-      <tr><td>图片理解（单图）</td><td>~13s（走代理，medium 推理）</td><td>正常</td></tr>
+      <tr><td>生成速度</td><td>~20–22 tok/s</td><td><strong>~40 tok/s</strong></td></tr>
+      <tr><td>首 token 延迟（TTFT）</td><td>内存紧时分钟级</td><td><strong>3–4 秒</strong></td></tr>
+      <tr><td>内存占用</td><td>~28 GB</td><td>~21 GB</td></tr>
+      <tr><td>上下文窗口</td><td>131072 tokens</td><td>131072 tokens</td></tr>
+      <tr><td>多模态支持</td><td>✅ 支持</td><td>✅ 支持</td></tr>
+      <tr><td>图片理解（单图）</td><td>~24s</td><td>~17s</td></tr>
     </tbody>
   </table>
+
+  <div class="tip">💡 上面是「开了 MTP / 切了 MLX」之后的数据。刚部署好如果只有 ~9–11 tok/s，别慌——那是 MTP 没开（见第七章），不是机器不行。</div>
 
   <p><strong>实际使用感受：</strong></p>
   <ul>
     <li><strong>写代码</strong>：流畅，跟云端模型差距不大，思维链能力很强</li>
     <li><strong>图片理解</strong>：能识别截图、UI 设计稿、架构图，准确率不错</li>
-    <li><strong>长时间对话</strong>：65K 上下文足够用，不容易「失忆」</li>
+    <li><strong>长时间对话</strong>：131K 上下文足够用，不容易「失忆」</li>
     <li><strong>工具调用</strong>：能正常使用终端、文件读写、浏览器操作等工具</li>
   </ul>
 
@@ -248,7 +256,7 @@ ollama run <strong>不支持</strong> <code>--image</code>，测图要走 OpenAI
   <h2>六、踩过的坑 & 经验总结</h2>
 
   <h3>🕳️ 坑 1：盲目下载官方模型</h3>
-  <p>一开始我直接 <code>ollama pull qwen3.8:27b</code>，结果发现<strong>没有 vision 能力</strong>，不能看图，agent一调用cpu占用还立马从40%原地飙升至94%。后来查文档才知道，Ollama 官方仓库里的模型是文本版，多模态需要自己配 Modelfile 挂载 mmproj。如果不放心，也可以亲自多下载几个版本实际比较下效果。</p>
+  <p>一开始我直接 <code>ollama pull qwen3.8:27b</code>，结果发现<strong>没有 vision 能力</strong>，不能看图，agent一调用cpu占用还立马从40%原地飙升至94%。后来查文档才知道，Ollama 官方仓库里的模型是文本版，多模态需要自己配 Modelfile 挂载 mmproj（方案 A），或直接用官方 MLX 原生版（方案 B，自带 vision）。如果不放心，也可以亲自多下载几个版本实际比较下效果。</p>
   <div class="tip tip-warn"><strong>教训：</strong>先看清楚需求再动手，不放心就多试试比较下，别偷懒直接用官方模板。</div>
 
   <h3>🕳️ 坑 2：Modelfile 路径写错</h3>
@@ -261,6 +269,16 @@ ollama run <strong>不支持</strong> <code>--image</code>，测图要走 OpenAI
 
   <hr>
 
+  <h3>🕳️ 坑 4：一张图吃掉 13 万 token？（已证伪）</h3>
+  <p>部署完接进 Agent，发了一张 1024×1024 的图，直接报错：</p>
+  <pre><code>request (131167 tokens) exceeds the available context
+size (131072 tokens)</code></pre>
+  <p>我一开始以为是「对话历史太长」，但这次会话里<strong>只有一张图和一句提问</strong>。查下来才明白：模型会把图片编码成一长串视觉 token，<strong>但一张 1024px 的图实测只要约 1084 token，根本不是 13 万</strong>！</p>
+  <p>那 131167 是怎么来的？是旧文档骗了我——它说「单张图约 13 万 token」，吓得我把 num_ctx 设成 65536，结果图片 + 哪怕一点点历史就爆了。<strong>真正的 400 报错是「图片 + 长对话历史」总和超 num_ctx，不是单张图吃掉所有预算。</strong></p>
+  <div class="tip tip-warn"><strong>教训：</strong>别按「文字 token」的直觉、更别按网上错的科普去估图片开销。一张图约 1084 token，但 <code>num_ctx</code> 不是越大越好——262144 会把模型挤出 GPU，反而更慢。推荐 <strong>131072</strong>（够用 + GPU 100%），别再用 65536 了。</div>
+
+  <hr>
+
   <h3>✅ 经验 1：做好配置快照</h3>
   <p>我在 <code>~/models/</code> 下创建了三个文件，方便以后恢复：</p>
   <ul>
@@ -270,74 +288,134 @@ ollama run <strong>不支持</strong> <code>--image</code>，测图要走 OpenAI
   </ul>
   <p>以后换电脑或重装系统，照着这些文件就能快速恢复。</p>
 
-  <h3>✅ 经验 2：量化选择有讲究</h3>
+  <h3>✅ 经验 2：量化选择有讲究，但 MLX 原生版更香</h3>
   <table>
     <thead><tr><th>量化级别</th><th>模型大小</th><th>最低内存</th><th>质量</th><th>推荐度</th></tr></thead>
     <tbody>
       <tr><td>Q2_XXS</td><td>~8 GB</td><td>10 GB+</td><td>较差</td><td>不推荐</td></tr>
       <tr><td>Q3_K_XL</td><td>~12 GB</td><td>16 GB+</td><td>中等</td><td>内存紧张时可用</td></tr>
-      <tr class="highlight-row"><td><strong>Q5_K_M</strong></td><td><strong>18 GB</strong></td><td><strong>22 GB+</strong></td><td><strong>良好</strong></td><td><strong>⭐ 性价比之选</strong></td></tr>
+      <tr><td><strong>Q5_K_M</strong></td><td><strong>18 GB</strong></td><td><strong>22 GB+</strong></td><td><strong>良好</strong></td><td><strong>⭐ 性价比之选</strong></td></tr>
       <tr><td>Q6_K_XL</td><td>~22 GB</td><td>28 GB+</td><td>优秀</td><td>内存够的话上这个</td></tr>
       <tr><td>Q8_K_XL</td><td>~30 GB</td><td>40 GB+</td><td>顶级</td><td>追求极致质量</td></tr>
     </tbody>
   </table>
-  <div class="tip tip-success">💡 <strong>经验之谈：</strong>如果你的内存够（48GB+），建议直接上 Q6_K_XL 或 Q8_K_XL，质量提升明显，价格只差一点磁盘空间。</div>
+  <div class="tip tip-success">💡 <strong>经验之谈：</strong>Q5_K_M 是 48GB 机器的甜点档，建议至少停在 Q5。但更省事的是直接用官方 <code>qwen3.8:27b-mlx</code>（MLX 原生版）：同样是 18GB 左右，却自带 Apple Silicon 原生 MLX 引擎 + MTP 投机解码，速度比 Q5 GGUF 快约 2 倍，而且不用自己下 GGUF、不用手写多模态模板。<strong>想偷懒又要快，无脑选 MLX 版。</strong></div>
 
-  <!-- 第六章：智能分流代理 -->
-  <h2>六、智能分流代理（必装，解决 xhigh 报错问题）</h2>
+  <!-- 第七章 -->
+  <h2>七、提速实战：MTP 投机解码 + 官方 MLX 原生版</h2>
 
-  <h3>为什么需要代理</h3>
-  <p>这是一个<strong>Ollama + Qwen3.8 的已知兼容性问题</strong>（GitHub Issue <a href="https://github.com/ollama/ollama/issues/17906" target="_blank" style="color:#ff6b35;">#17906</a>）：</p>
-  <p><code>xhigh</code> 推理档位<strong>对所有请求都报 500 错误</strong>——不是只有图片，纯文字也报错。</p>
-  <p>原因是 Qwen3.8 的 Jinja 模板定义 <code>xhigh</code> 为默认档位，但 Ollama 服务器层的校验逻辑与之冲突。</p>
-  <p>相关修复 PR <a href="https://github.com/ollama/ollama/pulls/17917" target="_blank" style="color:#ff6b35;">#17917</a> 至今未被合并，v0.33.3（最新稳定版）同样未修复。</p>
+  <p>部署跑通之后，继续抠性能，发现两个几乎不用额外配置的提速点，叠加之后差距很明显：</p>
 
-  <h3>解决方案：智能代理</h3>
-  <p>写了一个轻量代理（<code>~/models/ollama_strip_proxy.py</code>），监听在 <code>localhost:11435</code>：</p>
-  <ul>
-    <li><strong>检测请求是否含图片</strong> → 有图片则注入 <code>reasoning_effort=high</code>（~8–10s 返回）</li>
-    <li><strong>纯文字请求</strong> → 原样透传，保留原有思考档位</li>
-  </ul>
+  <h3>7.1 内嵌 MTP 投机解码（默认关闭，必须手动开）</h3>
+  <p>模型能跑，但只有 ~11 tok/s，M5 Pro 48GB 完全不该这么慢。查下来才发现：<strong>Qwen3.8 训练时自带 MTP（Multi-Token Prediction）投机解码头，但 Ollama 默认把它关了</strong>（<code>draft_num_predict=0</code>）。</p>
+  <p>原理很简单：MTP 头先「猜」几个 token，主模型一次性批量验证，猜对就采纳、猜错用主模型结果覆盖。<strong>输出分布和逐 token 解码完全一致，是无损加速</strong>。</p>
+  <table>
+    <thead><tr><th>场景</th><th>draft=0</th><th>draft=3</th><th>提速</th></tr></thead>
+    <tbody>
+      <tr><td>代码生成</td><td>11.71</td><td>19.89</td><td>+70%</td></tr>
+      <tr><td>开放式写作</td><td>10.29</td><td>11.80</td><td>+15%</td></tr>
+      <tr><td>列表/结构化</td><td>9.71</td><td>14.43</td><td>+49%</td></tr>
+    </tbody>
+  </table>
+  <p><strong>操作</strong>：Modelfile 加一行 <code>PARAMETER draft_num_predict 3</code> 后重建（方案 A 已写入）。推荐 3，是唯一「全场景正收益」的档位。</p>
 
-  <div class="tip tip-warn">
-    💡 <strong>Qwen3.8 推理档位实测（Ollama 0.33.2，纯文字请求）</strong><br><br>
-    <table style="margin:8px 0;font-size:14px;">
-      <thead><tr><th>档位</th><th>耗时</th><th>输出质量</th><th>状态</th></tr></thead>
-      <tbody>
-        <tr><td><code>low</code></td><td>~14s</td><td>基础回复</td><td>✅ 可用</td></tr>
-        <tr><td><code>medium</code></td><td>~22s</td><td>良好</td><td>✅ 可用</td></tr>
-        <tr style="background:#fff7f0;"><td><strong>high</strong></td><td><strong>~19s</strong></td><td><strong>更好</strong></td><td><strong>✅ 推荐</strong></td></tr>
-        <tr style="background:#fff0f0;"><td><code>xhigh</code></td><td>❌ 报错</td><td>—</td><td><strong>完全不可用</strong></td></tr>
-      </tbody>
-    </table>
-    <strong>实测发现：</strong><code>high</code> 比 <code>medium</code> 更快（19s vs 22s），且输出质量更高。<br>
-    <code>xhigh</code> 在所有请求上均报 500，是唯一不能用的档位。<br>
-    代理默认使用 <code>high</code>，在避免报错的前提下提供最佳推理效果。
-  </div>
+  <h3>7.2 官方 MLX 原生版（再快约 2 倍，强烈推荐）</h3>
+  <p>⚠️ 注意：MLX runner 只认原生 MLX 权重（safetensors 格式），不认 GGUF。所以不能直接给 GGUF 模型开 MLX 开关，必须下载官方 MLX 原生版。</p>
+  <p>官方 <code>qwen3.8:27b-mlx</code> 是 <strong>MLX 原生权重</strong>，Ollama 加载时<strong>自动走原生 MLX 引擎</strong>，不需要任何环境变量。实测三场景 tok/s：</p>
+  <table>
+    <thead><tr><th>场景</th><th>Q5+MTP(Metal)</th><th>27b-mlx(MLX)</th><th>提速</th></tr></thead>
+    <tbody>
+      <tr><td>代码生成</td><td>22.4</td><td>40.8</td><td>+82%</td></tr>
+      <tr><td>开放式写作</td><td>13.9</td><td>29.0</td><td>+109%</td></tr>
+      <tr><td>列表结构化</td><td>15.2</td><td>34.2</td><td>+125%</td></tr>
+    </tbody>
+  </table>
+  <div class="tip tip-warn">注意：给现有 GGUF 开 MLX 开关是无效操作（会回退 Metal），应直接下载官方 MLX 原生版。</div>
 
-  <h3>通用配置，所有工具均适用</h3>
-  <p>代理监听在 <code>localhost:11435</code>，<strong>不绑定任何特定工具</strong>。</p>
-  <p>Hermes Agent、WorkBuddy、Codex、Cursor 等任何调用 Ollama 的工具，只需把 base_url 从 11434 改为 11435 即可自动享受分流：</p>
+  <h3>7.3 体感验证：首 token 延迟从「几分钟」降到「3~4 秒」</h3>
+  <p>上面的 tok/s 只是理论速度，真正影响体验的是<strong>首 token 延迟（TTFT）</strong>。</p>
+  <p>之前 Q5 版在内存被其他 agent / 浏览器 / docker 占用的包络下，模型加载 + 超长 prompt prefill 会触发<strong>内存 swap</strong>——权重被换出到 SSD，单次要跟 swap 搏斗几分钟才出第一个字，像卡死了。</p>
+  <p>切到 MLX 版后：权重更紧凑（18GB vs 20.7GB）+ 原生 safetensors 直接加载 + 常驻热模型，绕开了 swap 地狱。</p>
+  <p><strong>实测场景</strong>：用 Hermes Agent 读取一个完整项目的「代码 + 文档」、要求反馈项目现状。</p>
+  <table>
+    <thead><tr><th>配置</th><th>首 token 延迟</th><th>体感</th></tr></thead>
+    <tbody>
+      <tr><td>Q5 + MTP（Metal）</td><td><strong>几分钟</strong> 无输出</td><td>卡死、像挂了</td></tr>
+      <tr><td>27b-mlx（原生 MLX）</td><td><strong>3~4 秒</strong> 出字</td><td>几乎即时</td></tr>
+    </tbody>
+  </table>
+  <p>tok/s 只快了约 2 倍，但首字时间从几分钟降到几秒，体感差别巨大——<strong>Q5 的「慢」大半不是生成慢，而是加载 / 首字被内存 swap 卡死</strong>；MLX 版绕开了这条路，瓶颈才回到正常的生成速度。</p>
+
+  <!-- 第八章 -->
+  <h2>八、推理档位与直连配置</h2>
+
+  <h3>直连即可，无需代理</h3>
+  <p>Qwen3.8 早期有个已知兼容性问题（GitHub Issue <a href="https://github.com/ollama/ollama/issues/17906" target="_blank" style="color:#ff6b35;">#17906</a>）：<code>xhigh</code> 推理档位<strong>对所有请求都报 500 错误</strong>。现在的 <strong>Ollama 0.33.x 已经原生支持 <code>reasoning_effort=high</code> 参数</strong>，直接连 Ollama（默认端口 11434）就能用，不需要任何中转代理。</p>
+  <div class="tip tip-success">💡 <strong>做法：</strong><code>base_url</code> 直接填 <code>http://localhost:11434/v1</code>，无需代理。</div>
+
+  <h3>Qwen3.8 推理档位实测（Ollama 0.33.3，纯文字请求）</h3>
+  <table>
+    <thead><tr><th>档位</th><th>耗时</th><th>输出质量</th><th>状态</th></tr></thead>
+    <tbody>
+      <tr><td><code>low</code></td><td>~14s</td><td>基础回复</td><td>✅ 可用</td></tr>
+      <tr><td><code>medium</code></td><td>~22s</td><td>良好</td><td>✅ 可用</td></tr>
+      <tr style="background:#fff7f0;"><td><strong>high</strong></td><td><strong>~19s</strong></td><td><strong>更好</strong></td><td><strong>✅ 推荐</strong></td></tr>
+      <tr style="background:#fff0f0;"><td><code>xhigh</code></td><td>❌ 报错</td><td>—</td><td><strong>完全不可用</strong></td></tr>
+    </tbody>
+  </table>
+  <p><strong>实测发现：</strong><code>high</code> 比 <code>medium</code> 更快（19s vs 22s），且输出质量更高。<code>xhigh</code> 在所有请求上均报 500，是唯一不能用的档位——所以<strong>客户端直接设 <code>reasoning_effort=high</code> 即可，别碰 xhigh</strong>。</p>
+
+  <h3>我的客户端配置</h3>
   <pre><code>providers:
   ollama:
     name: Ollama (Local)
-    base_url: http://localhost:11435/v1    # ← 走智能代理，非直连
+    base_url: http://localhost:11434/v1    # ← 直连，不走代理
     model: qwen3.8-local:latest</code></pre>
-  <p>WorkBuddy 用户编辑 <code>~/.workbuddy/models.json</code>，把 qwen3.8-local 的 url 改成：<code>http://localhost:11435/v1</code>（如需使用代理）</p>
+  <p>WorkBuddy 用户编辑 <code>~/.workbuddy/models.json</code>，把 qwen3.8-local 的 url 改成 <code>http://localhost:11434/v1</code> 即可。</p>
 
-  <h3>手动启停代理</h3>
-  <pre><code># 查看代理状态
-curl http://localhost:11435/api/tags
+  <!-- 第九章 -->
+  <h2>九、质量对比：Q5 GGUF vs MLX nvfp4（社区数据）</h2>
 
-# 查看日志
-tail -f ~/models/ollama_strip_proxy.out.log
+  <p>速度提上去了，质量会不会掉？这是换成 MLX 版后最该关心的点。我找了一圈社区里的对比数据，结论如下。</p>
 
-# 重启（也可通过环境变量调整默认推理档位）
-pkill -f ollama_strip_proxy
-VISION_EFFORT=high nohup python3 ~/models/ollama_strip_proxy.py > ~/models/ollama_strip_proxy.out.log 2>&1 &</code></pre>
+  <h3>9.1 速度对比：有人测了，结论一致</h3>
+  <table>
+    <thead><tr><th>测试者 / 机器</th><th>GGUF（Q4）</th><th>MLX（nvfp4）</th></tr></thead>
+    <tbody>
+      <tr><td>junxinzhang / M5 Pro 64G</td><td>26–29 tok/s</td><td><strong>39–40 tok/s</strong></td></tr>
+      <tr><td>smeltcore 社区报告 / M4 Pro</td><td>11.78 tok/s</td><td><strong>20–38 tok/s</strong></td></tr>
+    </tbody>
+  </table>
+  <p>但有个关键点两位作者都自己写明了：<strong>「两边量化也不同，所以不是纯引擎对比」</strong>。也就是说，你切到 MLX 时，量化也从 Q5（5-bit）换成了 nvfp4（4-bit）——速度快有一部分来自「引擎 + 量化」双管齐下，代价就是下一节那点质量差距。</p>
 
-  <!-- 第七章 -->
-  <h2>七、写在最后</h2>
+  <h3>9.2 质量对比：没有干净的同机对照，只有量化格式数据</h3>
+  <p>截至 2026-09，社区<strong>没有</strong>一份「同一台机器、同一批任务、Q5 GGUF vs nvfp4 MLX 逐项打分」的自然语言质量报告。能查到的，是量化格式层面的困惑度（Wikitext-2，越低越好，Llama 3.1 8B 代理）：</p>
+  <table>
+    <thead><tr><th>量化</th><th>相对 fp16 劣化</th><th>质量评级</th></tr></thead>
+    <tbody>
+      <tr><td><strong>Q5_K_M（GGUF 版）</strong></td><td><strong>+1.8%</strong></td><td>好</td></tr>
+      <tr style="background:#fff7f0;"><td><strong>NVFP4（MLX 版）</strong></td><td><strong>+3.2%</strong></td><td><strong>中-好，卡在 Q4 与 Q5 之间</strong></td></tr>
+      <tr><td>Q4_K_M</td><td>+4.0%</td><td>可接受</td></tr>
+    </tbody>
+  </table>
+  <p>willitrunai 的 Qwen3.8 专属表也印证：Q5_K_M 评级 <strong>High</strong>，NVFP4 和 Q4_K_M 都是 <strong>Medium</strong>。</p>
+  <div class="tip">💡 <strong>一句话结论</strong>：nvfp4 的质量<strong>略低于 Q5、略高于 Q4</strong>。对大多数推理、代码、长文总结任务，和 Q5 的差距在采样噪声范围内，体感基本无差别。只有两类场景能感到差别：<strong>严格格式输出（JSON、强语法约束代码）</strong> 和 <strong>长尾事实召回</strong>——NVFP4 偶发「token 溜号」会比 Q5 多一点，但不比 Q4 差。</div>
+
+  <h3>9.3 比「bit 数」更影响质量的真坑</h3>
+  <p>比起 Q5→nvfp4 那 1 个多百分点的差距，下面这些更容易让你觉得「模型变傻了」，建议优先排查：</p>
+  <ul>
+    <li><strong>xhigh 默认思考太啰嗦</strong>——agent loop 里有人报 10k token vs 竞品只用 1 个。不是质量问题，但体感灾难（实测 high 档最好用，别碰 xhigh）；</li>
+    <li><strong>KV cache 激进量化会直接搞崩私有评测</strong>——别为省内存把 KV 压太狠；</li>
+    <li><strong>不要低于 Q4</strong>——多人报告质量断崖式下跌，比 27B 预期还狠。</li>
+  </ul>
+
+  <h3>9.4 不满意怎么回退</h3>
+  <p>基于上面的数据，nvfp4（MLX 版）的质量<strong>大概率感觉不出差别</strong>，除非你经常做严格 JSON / 代码语法 / 长尾事实召回这类任务。如果实际用下来觉得发飘、幻觉变多，部署包里已经备好 <code>Modelfile.q5</code>，一句命令就能切回 Q5：</p>
+  <pre><code>ollama create qwen3.8-local -f ~/models/Modelfile.q5</code></pre>
+  <p>切回 GGUF 版不影响其他配置，随时可以换回来。</p>
+
+  <!-- 第十章 -->
+  <h2>十、写在最后</h2>
   <p>这次折腾让我明白了一个道理：</p>
   <blockquote>本地部署大模型并不复杂，关键是要想清楚需求、选对工具链、做好配置管理。</blockquote>
 
@@ -348,7 +426,8 @@ brew install ollama
 # 2. 跑个简单的测试
 ollama run qwen3.8:7b "你好"
 
-# 3. 如果感觉不错，再升级到 27B 多模态版</code></pre>
+# 3. 如果感觉不错，再升级到 27B 多模态版（推荐直接上 MLX 原生版）
+ollama pull qwen3.8:27b-mlx</code></pre>
 
   <p>本地部署最大的好处是：</p>
   <ul>
@@ -364,9 +443,10 @@ ollama run qwen3.8:7b "你好"
   <h2>附：一键部署包（开箱即用）</h2>
   <p>我把整个部署方案打包成了一个压缩包，包含：</p>
   <ul>
-    <li>✅ <code>Modelfile</code> 模板（修改路径即可重建模型）</li>
+    <li>✅ <code>Modelfile</code> 模板（MLX 原生版主推，含 Q5 GGUF 备选）</li>
     <li>✅ <code>verify-ollama.sh</code> 验证脚本（一键检查部署状态）</li>
-    <li>✅ <code>setup-guide.md</code> 详细图文指南</li>
+    <li>✅ <code>setup-guide.md</code> 详细图文指南（含 MTP + MLX 提速章节）</li>
+    <li>✅ <code>CURRENT_CONFIG.md</code> 当前配置快照</li>
     <li>✅ Hermes Agent 配置示例</li>
   </ul>
   <p>下载后把模型文件放到指定位置，运行验证脚本即可确认一切正常。</p>
