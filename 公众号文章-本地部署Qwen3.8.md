@@ -157,7 +157,7 @@ p = {'model':'qwen3.8:27b-mlx','messages':[{'role':'user','content':[
 ]}],
   'max_tokens':2000, 'stream':False}
 r = urllib.request.urlopen(urllib.request.Request(
-  'http://localhost:11434/v1/chat/completions', data=json.dumps(p).encode(),
+  'http://127.0.0.1:11434/v1/chat/completions', data=json.dumps(p).encode(),
   headers={'Content-Type':'application/json'}), timeout=300)
 print(json.loads(r.read())['choices'][0]['message']['content'])
 "
@@ -173,77 +173,200 @@ Qwen3.8 本地跑起来后，就可以配合各种 Agent 工具使用了。
 
 ### 4.1 切换到本地模型
 
-以 WorkBuddy 为例：
+**以 Claude Code 为例（常用斜杠命令）：**
 
 ```bash
-# 添加本地 Ollama 提供商
-workbuddy model add --provider ollama-local \
-  --base-url http://localhost:11434/v1 \
-  --model qwen3.8:27b-mlx
+# 方法1：启动时指定模型
+claude --model ollama/qwen3.8:27b-mlx
 
-# 切换到本地模型
-workbuddy model switch --provider ollama-local --model qwen3.8:27b-mlx
+# 方法2：会话中切换模型
+/model ollama/qwen3.8:27b-mlx
+
+# 方法3：配置项目级默认模型
+# 在项目根目录创建 .claude/settings.json
+# {
+#   "models": {
+#     "default": "ollama/qwen3.8:27b-mlx"
+#   }
+# }
 ```
 
-其他主流 Agent 工具（Claude Code、OpenCode、Hermes 等）也都有类似的模型切换命令。
+**其他主流 Agent 工具的类似命令：**
+
+| 工具 | 切换命令示例 |
+|------|-------------|
+| OpenCode | `opencode -m ollama/qwen3.8:27b-mlx` |
+| Trae | 设置 → Models → 添加本地 Ollama 端点 |
+| Codex | `codex -m ollama/qwen3.8:27b-mlx` |
+| Hermes Agent | 在会话中使用 `/model` 命令切换 |
 
 ### 4.2 切回云端
 
 ```bash
-# 切回云端模型（以 DeepSeek 为例）
-workbuddy model switch --provider openai --model deepseek-chat
+# Claude Code 切回云端（以 Claude Sonnet 为例）
+/model claude-sonnet-4-20250514
 ```
 
 ---
 
-## 五、常见问题排查
+## 五、项目走过的弯路
+
+这部分是我踩过的坑，大家可以直接跳过，但如果遇到问题可以参考排查思路。
+
+### 弯路1：MLX 原生版 vs GGUF + MLX 引擎
+
+**我的错误尝试：**
+
+一开始我下载的 GGUF 量化版本，然后听说 MLX 快，就想强制让 Ollama 用 MLX 引擎跑 GGUF 文件。我设置了 `OLLAMA_LLM_LIBRARY=mlx`，结果完全没用，模型还是走的 Metal。
+
+**根因：**
+
+MLX runner 不认 GGUF 格式权重。GGUF 格式的模型只能用 llama.cpp（Metal 后端），要想用 MLX 引擎，必须用 MLX 原生格式（safetensors/nvfp4）。
+
+**教训：**
+
+不要为了用 MLX 而 MLX，正确的做法是：
+- GGUF 格式 → 走 Metal（LLM_LIBRARY 保持默认）
+- MLX 原生格式（如 `qwen3.8:27b-mlx`）→ 走 MLX 引擎（无需任何环境变量）
+
+---
+
+### 弯路2：上下文长度默认只有 4096
+
+**现象：**
+
+读长文档时报错 "context length exceeded"，或者模型表现得像"记不住东西"。
+
+**根因：**
+
+我检查 `ollama show` 输出才发现，虽然模型支持 262K 上下文，但**默认值只有 4096**。这意味着超过 4096 token 的部分会被静默截断，根本不会报错，只是模型"看不见"后面的内容。
+
+**教训：**
+
+一定要全局设置 `OLLAMA_CONTEXT_LENGTH=131072`，否则每个新拉的模型都会用默认值。
+
+---
+
+### 弯路3：图片识别报错 400
+
+**现象：**
+
+用 WorkBuddy 发图时，报 `400 BadRequestError: No data iterator found for token: <|video_pad|>`。
+
+**根因：**
+
+Qwen3.8 的 GGUF 版本不内嵌 chat template，Ollama 会自动退回裸模板 `{{ .Prompt }}`。这个裸模板不懂图像 token 的处理逻辑。
+
+**教训：**
+
+在 Modelfile 里显式写入 Qwen 多模态模板：
+```dockerfile
+TEMPLATE """{{- if .System }}<|system|>
+{{ .System }}
+<|end|>
+{{ end }}
+{{- range .Messages }}
+{{- if eq .Role "user" }}<|user|>
+{{ .Content }}
+<|end|>
+{{ else if eq .Role "assistant" }}<|assistant|>
+{{ if .Content }}{{ .Content }}{{ end }}{{ if .ReasoningContent }}<|reserved_special_token_145|>{{ .ReasoningContent }}<|end|>
+{{ end }}
+<|end|>
+{{ end }}
+{{- end }}
+<|assistant|>
+{{ if .ReasoningContent }}<|reserved_special_token_145|>{{ .ReasoningContent }}<|end|>
+{{ end }}{{ .Response }}"""
+```
+
+**注意：** 必须用 `{{ .Content }}`，不能用 `{{ .Content[0] }}`，Ollama 模板引擎不支持数组索引。
+
+---
+
+### 弯路4：MTP 投机解码默认关闭
+
+**现象：**
+
+性能不够快，以为模型本身的问题。
+
+**根因：**
+
+Qwen3.8 的 GGUF 文件自带 MTP 投机解码头，但默认是关闭的（`draft_num_predict=0`）。日志里一直是 `specu: no`，等于白扔了模型自带的加速功能。
+
+**解决：**
+
+在 Modelfile 里设置：
+```dockerfile
+PARAMETER draft_num_predict 3
+```
+
+实测效果：代码生成从 11.7 tok/s 提升到 21.6 tok/s（+85%）。
+
+---
+
+### 弯路5：keep_alive 对 /v1 API 不生效
+
+**现象：**
+
+设置了 `OLLAMA_KEEP_ALIVE=30m`，但每次调用还是要等 6 秒冷启动。
+
+**根因：**
+
+WorkBuddy 走的是 OpenAI 兼容的 `/v1/chat/completions` 端点，这个端点**忽略请求里的 keep_alive 参数**。服务端的环境变量对 /v1 请求也不生效。
+
+**教训：**
+
+如果要用 keep_alive，需要用 Ollama 原生 API（`/api/chat`），而不是 /v1。或者确保用 `launchctl setenv OLLAMA_KEEP_ALIVE 30m` 全局设置。
+
+---
+
+### 弯路6：localhost 代理陷阱
+
+**现象：**
+
+用 `curl localhost:11434` 能访问，但程序连接失败。
+
+**根因：**
+
+系统代理会拦截 `localhost` 的请求，导致返回假数据或连接失败。另外，`localhost` 可能解析到 IPv6 `::1`，但 Ollama 只监听 IPv4。
+
+**解决：**
+
+始终用 `127.0.0.1:11434` 而不是 `localhost:11434`。
+
+---
+
+## 六、常见问题排查
 
 ### 问题1：读长文档时报 "context length exceeded"
 
-**根因**：默认上下文 4096，长文档被截断。
-
-**解决**：
+**解决：**
 ```bash
 launchctl setenv OLLAMA_CONTEXT_LENGTH 131072
 pkill -f "ollama serve" && sleep 2 && open -a Ollama
 ```
 
-**注意**：`num_ctx` 是容量旋钮，不是速度旋钮。131072 的价值是"装得下图片+长历史"，不影响速度。
-
----
-
 ### 问题2：响应速度慢
 
-**根因**：模型被卸载到内存，每次冷启动都要重新加载。
-
-**解决**：
+**解决：**
 ```bash
 launchctl setenv OLLAMA_KEEP_ALIVE 30m
 ```
 
-如果还慢，检查是否触发 swap：
+检查是否触发 swap：
 ```bash
 memory_pressure | grep "Swap"
 # 如果有 swap，说明内存不够
 ```
 
----
-
 ### 问题3：图片识别失败或 400 错误
 
-**根因 A**：mmproj 视觉投影缺失（仅 GGUF 方案）
+**MLX 原生版**：自带视觉投影，无需额外配置。
 
-**解决**：MLX 原生版自带视觉投影，无需额外配置。
+**GGUF 版**：需要在 Modelfile 中显式写入多模态模板（见上文弯路3）。
 
-**根因 B**：num_predict 太小，thinking 模式吃光预算
-
-**解决**：调用时传 `max_tokens: 2000` 或更大。
-
-**根因 C**：走代理导致 localhost 请求异常
-
-**解决**：确保直连 `127.0.0.1:11434`，不要用 `localhost`（可能解析到 IPv6）。
-
----
+确保调用时传 `max_tokens: 2000` 或更大，避免 thinking 模式吃光预算。
 
 ### 问题4：回复内容为空
 
@@ -253,7 +376,7 @@ memory_pressure | grep "Swap"
 
 ---
 
-## 六、实测性能数据
+## 七、实测性能数据
 
 ### M5 Pro 48GB 实测（2026-09-07）
 
@@ -274,16 +397,20 @@ memory_pressure | grep "Swap"
 
 ---
 
-## 七、总结
+## 八、总结
 
 这套方案的核心思路是：
 
 1. **模型选型**：Qwen3.8-27B，性能强、免费开源、多模态支持
 2. **引擎选择**：MLX 原生版，比 GGUF 快约 2 倍，首 token 延迟更低
 3. **全局配置**：4 个环境变量一次设置，所有模型受益
-4. **工具配合**：Ollama + AI Agent 工具（WorkBuddy 等），即插即用
+4. **工具配合**：Ollama + AI Agent 工具，即插即用
 
-整个过程踩了不少坑，但从翻车到跑通，大概花了 2-3 天时间。
+整个过程踩了不少坑，从翻车到跑通，大概花了 2-3 天时间。主要是被以下几个问题卡住过：
+- 上下文默认只有 4096，长文档被静默截断
+- 图片识别报错 400，因为模板没写对
+- MTP 投机解码默认关闭，浪费了模型自带的加速功能
+- keep_alive 对 /v1 API 不生效，每次都要冷启动
 
 现在这套方案已经稳定运行，每天陪我写代码、分析文档、整理思路，效率提升明显。
 

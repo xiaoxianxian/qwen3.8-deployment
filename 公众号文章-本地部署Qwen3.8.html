@@ -90,11 +90,6 @@
   tr:nth-child(even) {
     background: #fafafa;
   }
-  .highlight {
-    background: linear-gradient(120deg, #a8edea 0%, #fed6e3 100%);
-    padding: 2px 4px;
-    border-radius: 3px;
-  }
   .tip {
     background: #e8f5e9;
     border-left: 4px solid #4CAF50;
@@ -125,6 +120,10 @@
     text-align: center;
     margin: 30px 0;
     color: #ccc;
+  }
+  .section-title {
+    color: #d32f2f;
+    font-weight: bold;
   }
 </style>
 </head>
@@ -264,7 +263,7 @@ p = {'model':'qwen3.8:27b-mlx','messages':[{'role':'user','content':[
 ]}],
   'max_tokens':2000, 'stream':False}
 r = urllib.request.urlopen(urllib.request.Request(
-  'http://localhost:11434/v1/chat/completions', data=json.dumps(p).encode(),
+  'http://127.0.0.1:11434/v1/chat/completions', data=json.dumps(p).encode(),
   headers={'Content-Type':'application/json'}), timeout=300)
 print(json.loads(r.read())['choices'][0]['message']['content'])
 "</code></pre>
@@ -277,56 +276,134 @@ print(json.loads(r.read())['choices'][0]['message']['content'])
   
   <h3>4.1 切换到本地模型</h3>
   
-  <p>以 WorkBuddy 为例：</p>
+  <p><strong>以 Claude Code 为例（常用斜杠命令）：</strong></p>
   
-  <pre><code># 添加本地 Ollama 提供商
-workbuddy model add --provider ollama-local \
-  --base-url http://localhost:11434/v1 \
-  --model qwen3.8:27b-mlx
+  <pre><code># 方法1：启动时指定模型
+claude --model ollama/qwen3.8:27b-mlx
 
-# 切换到本地模型
-workbuddy model switch --provider ollama-local --model qwen3.8:27b-mlx</code></pre>
+# 方法2：会话中切换模型
+/model ollama/qwen3.8:27b-mlx
+
+# 方法3：配置项目级默认模型
+# 在项目根目录创建 .claude/settings.json
+# {
+#   "models": {
+#     "default": "ollama/qwen3.8:27b-mlx"
+#   }
+# }</code></pre>
   
-  <p>其他主流 Agent 工具（Claude Code、OpenCode、Hermes 等）也都有类似的模型切换命令。</p>
+  <p><strong>其他主流 Agent 工具的类似命令：</strong></p>
   
+  <table>
+    <tr><th>工具</th><th>切换命令示例</th></tr>
+    <tr><td>OpenCode</td><td><code>opencode -m ollama/qwen3.8:27b-mlx</code></td></tr>
+    <tr><td>Trae</td><td>设置 → Models → 添加本地 Ollama 端点</td></tr>
+    <tr><td>Codex</td><td><code>codex -m ollama/qwen3.8:27b-mlx</code></td></tr>
+    <tr><td>Hermes Agent</td><td>在会话中使用 <code>/model</code> 命令切换</td></tr>
+  </table>
+
   <h3>4.2 切回云端</h3>
   
-  <pre><code># 切回云端模型（以 DeepSeek 为例）
-workbuddy model switch --provider openai --model deepseek-chat</code></pre>
+  <pre><code># Claude Code 切回云端（以 Claude Sonnet 为例）
+/model claude-sonnet-4-20250514</code></pre>
 
-  <h2>五、常见问题排查</h2>
+  <h2>五、项目走过的弯路</h2>
+  
+  <p>这部分是我踩过的坑，大家可以直接跳过，但如果遇到问题可以参考排查思路。</p>
+  
+  <h3>弯路1：MLX 原生版 vs GGUF + MLX 引擎</h3>
+  
+  <p><strong>我的错误尝试：</strong></p>
+  <p>一开始我下载的 GGUF 量化版本，然后听说 MLX 快，就想强制让 Ollama 用 MLX 引擎跑 GGUF 文件。我设置了 <code>OLLAMA_LLM_LIBRARY=mlx</code>，结果完全没用，模型还是走的 Metal。</p>
+  
+  <p><strong>根因：</strong></p>
+  <p>MLX runner 不认 GGUF 格式权重。GGUF 格式的模型只能用 llama.cpp（Metal 后端），要想用 MLX 引擎，必须用 MLX 原生格式（safetensors/nvfp4）。</p>
+  
+  <p><strong>教训：</strong></p>
+  <ul>
+    <li>GGUF 格式 → 走 Metal（LLM_LIBRARY 保持默认）</li>
+    <li>MLX 原生格式（如 <code>qwen3.8:27b-mlx</code>）→ 走 MLX 引擎（无需任何环境变量）</li>
+  </ul>
+
+  <h3>弯路2：上下文长度默认只有 4096</h3>
+  
+  <p><strong>现象：</strong></p>
+  <p>读长文档时报错 "context length exceeded"，或者模型表现得像"记不住东西"。</p>
+  
+  <p><strong>根因：</strong></p>
+  <p>我检查 <code>ollama show</code> 输出才发现，虽然模型支持 262K 上下文，但<strong>默认值只有 4096</strong>。这意味着超过 4096 token 的部分会被静默截断，根本不会报错，只是模型"看不见"后面的内容。</p>
+  
+  <p><strong>教训：</strong></p>
+  <p>一定要全局设置 <code>OLLAMA_CONTEXT_LENGTH=131072</code>，否则每个新拉的模型都会用默认值。</p>
+
+  <h3>弯路3：图片识别报错 400</h3>
+  
+  <p><strong>现象：</strong></p>
+  <p>用 WorkBuddy 发图时，报 <code>400 BadRequestError: No data iterator found for token:  スポンサーリンク</code>。</p>
+  
+  <p><strong>根因：</strong></p>
+  <p>Qwen3.8 的 GGUF 版本不内嵌 chat template，Ollama 会自动退回裸模板 <code>{{ .Prompt }}</code>。这个裸模板不懂图像 token 的处理逻辑。</p>
+  
+  <p><strong>教训：</strong></p>
+  <p>在 Modelfile 里显式写入 Qwen 多模态模板（见 setup-guide.md 中的完整模板）。</p>
+  <p><strong>注意：</strong>必须用 <code>{{ .Content }}</code>，不能用 <code>{{ .Content[0] }}</code>，Ollama 模板引擎不支持数组索引。</p>
+
+  <h3>弯路4：MTP 投机解码默认关闭</h3>
+  
+  <p><strong>现象：</strong></p>
+  <p>性能不够快，以为模型本身的问题。</p>
+  
+  <p><strong>根因：</strong></p>
+  <p>Qwen3.8 的 GGUF 文件自带 MTP 投机解码头，但默认是关闭的（<code>draft_num_predict=0</code>）。</p>
+  
+  <p><strong>解决：</strong></p>
+  <pre><code>PARAMETER draft_num_predict 3</code></pre>
+  <p>实测效果：代码生成从 11.7 tok/s 提升到 21.6 tok/s（+85%）。</p>
+
+  <h3>弯路5：keep_alive 对 /v1 API 不生效</h3>
+  
+  <p><strong>现象：</strong></p>
+  <p>设置了 <code>OLLAMA_KEEP_ALIVE=30m</code>，但每次调用还是要等 6 秒冷启动。</p>
+  
+  <p><strong>根因：</strong></p>
+  <p>WorkBuddy 走的是 OpenAI 兼容的 <code>/v1/chat/completions</code> 端点，这个端点<strong>忽略请求里的 keep_alive 参数</strong>。</p>
+  
+  <p><strong>教训：</strong></p>
+  <p>如果要用 keep_alive，需要用 Ollama 原生 API（<code>/api/chat</code>），而不是 /v1。或者确保用 <code>launchctl setenv OLLAMA_KEEP_ALIVE 30m</code> 全局设置。</p>
+
+  <h3>弯路6：localhost 代理陷阱</h3>
+  
+  <p><strong>现象：</strong></p>
+  <p>用 <code>curl localhost:11434</code> 能访问，但程序连接失败。</p>
+  
+  <p><strong>根因：</strong></p>
+  <p>系统代理会拦截 <code>localhost</code> 的请求，导致返回假数据或连接失败。另外，<code>localhost</code> 可能解析到 IPv6 <code>::1</code>，但 Ollama 只监听 IPv4。</p>
+  
+  <p><strong>解决：</strong></p>
+  <p>始终用 <code>127.0.0.1:11434</code> 而不是 <code>localhost:11434</code>。</p>
+
+  <h2>六、常见问题排查</h2>
   
   <h3>问题1：读长文档时报 "context length exceeded"</h3>
   
-  <p><strong>根因</strong>：默认上下文 4096，长文档被截断。</p>
-  
-  <p><strong>解决</strong>：</p>
+  <p><strong>解决：</strong></p>
   <pre><code>launchctl setenv OLLAMA_CONTEXT_LENGTH 131072
 pkill -f "ollama serve" && sleep 2 && open -a Ollama</code></pre>
-  
-  <p><strong>注意</strong>：<code>num_ctx</code> 是容量旋钮，不是速度旋钮。131072 的价值是"装得下图片+长历史"，不影响速度。</p>
 
   <h3>问题2：响应速度慢</h3>
   
-  <p><strong>根因</strong>：模型被卸载到内存，每次冷启动都要重新加载。</p>
-  
-  <p><strong>解决</strong>：</p>
+  <p><strong>解决：</strong></p>
   <pre><code>launchctl setenv OLLAMA_KEEP_ALIVE 30m</code></pre>
   
-  <p>如果还慢，检查是否触发 swap：</p>
+  <p>检查是否触发 swap：</p>
   <pre><code>memory_pressure | grep "Swap"
 # 如果有 swap，说明内存不够</code></pre>
 
   <h3>问题3：图片识别失败或 400 错误</h3>
   
-  <p><strong>根因 A</strong>：mmproj 视觉投影缺失（仅 GGUF 方案）</p>
-  <p><strong>解决</strong>：MLX 原生版自带视觉投影，无需额外配置。</p>
-  
-  <p><strong>根因 B</strong>：num_predict 太小，thinking 模式吃光预算</p>
-  <p><strong>解决</strong>：调用时传 <code>max_tokens: 2000</code> 或更大。</p>
-  
-  <p><strong>根因 C</strong>：走代理导致 localhost 请求异常</p>
-  <p><strong>解决</strong>：确保直连 <code>127.0.0.1:11434</code>，不要用 <code>localhost</code>（可能解析到 IPv6）。</p>
+  <p><strong>MLX 原生版</strong>：自带视觉投影，无需额外配置。</p>
+  <p><strong>GGUF 版</strong>：需要在 Modelfile 中显式写入多模态模板（见上文弯路3）。</p>
+  <p>确保调用时传 <code>max_tokens: 2000</code> 或更大，避免 thinking 模式吃光预算。</p>
 
   <h3>问题4：回复内容为空</h3>
   
@@ -334,7 +411,7 @@ pkill -f "ollama serve" && sleep 2 && open -a Ollama</code></pre>
   
   <p><strong>解决</strong>：调用时传 <code>max_tokens: 2000</code> 或更大，或传 <code>think: false</code> 关闭思考。</p>
 
-  <h2>六、实测性能数据</h2>
+  <h2>七、实测性能数据</h2>
   
   <h3>M5 Pro 48GB 实测（2026-09-07）</h3>
   
@@ -355,16 +432,22 @@ pkill -f "ollama serve" && sleep 2 && open -a Ollama</code></pre>
   
   <p><strong>关键结论</strong>：MLX 原生版不只是生成快，更重要的是<strong>绕开了 swap 地狱</strong>，首 token 从分钟级降到秒级——这才是体感提升的核心。</p>
 
-  <h2>七、总结</h2>
+  <h2>八、总结</h2>
   
   <p>这套方案的核心思路是：</p>
   
   <p>1. <strong>模型选型</strong>：Qwen3.8-27B，性能强、免费开源、多模态支持<br>
   2. <strong>引擎选择</strong>：MLX 原生版，比 GGUF 快约 2 倍，首 token 延迟更低<br>
   3. <strong>全局配置</strong>：4 个环境变量一次设置，所有模型受益<br>
-  4. <strong>工具配合</strong>：Ollama + AI Agent 工具（WorkBuddy 等），即插即用</p>
+  4. <strong>工具配合</strong>：Ollama + AI Agent 工具，即插即用</p>
   
-  <p>整个过程踩了不少坑，但从翻车到跑通，大概花了 2-3 天时间。</p>
+  <p>整个过程踩了不少坑，从翻车到跑通，大概花了 2-3 天时间。主要是被以下几个问题卡住过：</p>
+  <ul>
+    <li>上下文默认只有 4096，长文档被静默截断</li>
+    <li>图片识别报错 400，因为模板没写对</li>
+    <li>MTP 投机解码默认关闭，浪费了模型自带的加速功能</li>
+    <li>keep_alive 对 /v1 API 不生效，每次都要冷启动</li>
+  </ul>
   
   <p>现在这套方案已经稳定运行，每天陪我写代码、分析文档、整理思路，效率提升明显。</p>
 
