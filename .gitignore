@@ -1,0 +1,18 @@
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# 配置文件备份（保留Modelfile即可）
+Modelfile.*.bak-*
+Modelfile.local
+Modelfile.mlx
+
+# 开发相关（不需要公开）
+CHANGELOG.md
+IDEA.md
+调优与避坑指南.md
+
+# 文档子目录（已合并到主文件）
+docs/
+scripts/

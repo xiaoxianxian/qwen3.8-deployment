@@ -1,10 +1,16 @@
-# 本地 Qwen3.8 部署指南
+# 本地 Qwen3.8-27B 部署指南
 
-基于 M5 Pro / 48GB 实测的本地 LLM 部署完整指南。
+基于 M5 Pro / 48GB 实测的本地 LLM 部署完整教程。
 
-## 快速开始
+## 🎯 适用对象
 
-### 1. 环境检查
+- macOS M 系列芯片（M1/M2/M3/M4）
+- 内存 ≥ 24GB（推荐 32GB+）
+- 已有 Python 环境
+
+## 📦 快速开始
+
+### 第一步：检查环境
 
 ```bash
 # 查看内存
@@ -16,68 +22,145 @@ for port in 7890 7897 1087 1080; do
 done
 ```
 
-### 2. 选择量化版本
+### 第二步：选择量化版本
 
-| 内存 | 推荐版本 | 文件大小 |
-|------|---------|---------|
-| 16GB | Q3_K_XL / Q4_K_M | 12-16 GB |
-| 24GB+ | **Q5_K_M** ⭐ | 18.41 GB |
-| 36GB+ | Q6_K_XL | 23.56 GB |
-| 48GB+ | Q8_K_XL | 29.30 GB |
+| 内存 | 推荐版本 | 文件大小 | 生成速度 |
+|------|---------|---------|---------|
+| 16GB | Q3_K_XL / Q4_K_M | 12-16 GB | ~30 tok/s |
+| 24GB+ | **Q5_K_M** ⭐ | 18.41 GB | ~40 tok/s |
+| 36GB+ | Q6_K_XL | 23.56 GB | ~35 tok/s |
+| 48GB+ | Q8_K_XL | 29.30 GB | ~25 tok/s |
 
-### 3. 验证状态
+### 第三步：安装 Ollama
 
 ```bash
-./scripts/verify-ollama.sh
+# 方式一：Homebrew（推荐）
+brew install ollama
+
+# 方式二：直接下载
+# https://ollama.com/download
 ```
 
-## 文档结构
+### 第四步：下载模型
 
-```
-├── README.md                    # 本文件（项目说明）
-├── setup-guide.md               # 完整部署指南（从零开始看这个）
-├── 调优与避坑指南.md            # ⭐ 装好之后的调优与踩坑（强烈推荐）
-├── CURRENT_CONFIG.md            # 本机配置快照
-├── Modelfile                    # 模型配置模板
-├── docs/
-│   ├── LOCAL_MODEL_SETUP_GUIDE.md  # 主文档（完整版）
-│   ├── SKILL.md                 # Skill入口（简洁版）
-│   └── references/
-│       ├── guide.md             # 详细流程
-│       └── api_reference.md     # API格式参考
-└── scripts/
-    ├── verify-ollama.sh         # 一键验证脚本
-    └── ollama_strip_proxy.py   # 上下文截断代理
+```bash
+# 国内镜像下载（推荐）
+export HF_ENDPOINT=https://hf-mirror.com
+ollama pull unsloth/Qwen3.8-27B-GGUF:Qwen3.8-27B-UD-Q5_K_M
+
+# 或从 HuggingFace 直接下载（需代理）
+ollama pull unsloth/Qwen3.8-27B-GGUF:Qwen3.8-27B-UD-Q5_K_M
 ```
 
-## 实测性能（M5 Pro / 48GB）
+### 第五步：创建本地模型
 
-### MLX 原生版（qwen3.8:27b-mlx，当前推荐）
-- 生成速度：**~40 tok/s**（代码生成 40.8 / 开放式写作 29.0 / 列表结构化 34.2）
-- 首 token 延迟：**3-4 秒**
-- 内存占用：~18GB（nvfp4 量化）
-- 自动开启 MTP 投机解码，接受率约 0.90
+```bash
+# 创建自定义模型配置
+cat > Modelfile << 'EOF'
+FROM qwen3.8:27b-ud-q5_k_m
 
-### GGUF 备选方案（Q5_K_M + draft_num_predict=3）
-- 生成速度：~22 tok/s（代码类）
-- 首次加载：~5s（常驻期间 ~0）
-- 内存占用：~28GB（num_ctx=131072 时）
-- 图片理解（1024px 单图 + 思考）：~17s
+# 上下文窗口设置
+PARAMETER num_ctx 131072
 
-> MLX 原生版比 GGUF 方案快约 2 倍，且首 token 延迟更低。
-> 见 `CURRENT_CONFIG.md` 和 `调优与避坑指南.md` 的详细说明。
+# MTP 投机解码（Qwen3.8 自带加速）
+PARAMETER draft_num_predict 3
 
-## 分享给别人
+# 采样参数
+PARAMETER temperature 0.7
+PARAMETER top_p 0.95
+PARAMETER top_k 20
+EOF
 
-- **从零部署**：发 `setup-guide.md`
-- **已经装好、想调优**：发 `调优与避坑指南.md`（这次踩的坑都在里面）
-- 两者都是独立完整的，不需要附带其他文件
+ollama create qwen3.8-local -f Modelfile
+```
 
-### 分享前请替换
+### 第六步：配置全局环境变量
 
-文档里的 `<你的用户名>` 是路径占位符，对方需替换为自己的实际路径。
+```bash
+# macOS 全局配置
+sudo launchctl setenv OLLAMA_CONTEXT_LENGTH 131072
+sudo launchctl setenv OLLAMA_FLASH_ATTENTION 1
+sudo launchctl setenv OLLAMA_KV_CACHE_TYPE q8_0
+sudo launchctl setenv OLLAMA_KEEP_ALIVE 30m
 
-## 资源
+# 生效配置
+sudo launchctl unload /Library/LaunchDaemons/org.ollama.ollama.plist 2>/dev/null || true
+sudo launchctl load /Library/LaunchDaemons/org.ollama.ollama.plist 2>/dev/null || true
+```
 
-- 模型仓库：https://huggingface.co/unsloth/Qwen3.8-27B-GGUF
-- Ollama 文档：https://ollama.com/docs
+### 第七步：验证安装
+
+```bash
+# 运行验证脚本
+./verify-ollama.sh
+```
+
+### 第八步：使用模型
+
+```bash
+# 测试对话
+ollama run qwen3.8-local "你好，请用一句话介绍你自己"
+
+# 测试代码生成
+ollama run qwen3.8-local "写一个 Python 快速排序算法"
+
+# 测试图片理解（需添加视觉模型）
+ollama run qwen3.8-local "描述这张图片的内容" --images image.jpg
+```
+
+## 🔗 API 调用
+
+Ollama 提供 OpenAI 兼容的 API：
+
+```python
+from openai import OpenAI
+
+client = OpenAI(
+    base_url="http://localhost:11434/v1",
+    api_key="ollama"
+)
+
+response = client.chat.completions.create(
+    model="qwen3.8-local",
+    messages=[{"role": "user", "content": "你好"}],
+    temperature=0.7,
+    max_tokens=2000
+)
+
+print(response.choices[0].message.content)
+```
+
+## 📊 性能数据（M5 Pro / 48GB）
+
+| 指标 | 数值 |
+|------|------|
+| 代码生成 | ~40.8 tok/s |
+| 开放式写作 | ~29.0 tok/s |
+| 列表结构化 | ~34.2 tok/s |
+| 首 token 延迟 | 3-4 秒 |
+| 内存占用 | ~18GB |
+| MTP 接受率 | ~0.90 |
+
+## 🔧 常见问题
+
+### Q1: 内存不足怎么办？
+降低 `num_ctx` 到 32768 或换用更小的量化版本（Q4_K_M）。
+
+### Q2: 生成速度很慢？
+检查是否开启了 Swap，确保模型完全加载到内存。
+
+### Q3: 图片理解报错？
+确保使用支持视觉的模型（如 `qwen2.5-vl`），并检查图片格式。
+
+### Q4: 需要联网吗？
+不需要。本地模型完全离线运行，无需联网。
+
+## 📚 参考文档
+
+- Ollama 官方文档：https://ollama.com/docs
+- Qwen3.8 模型卡片：https://huggingface.co/Qwen/Qwen3.8-27B
+- 未适技术 GGUF 量化：https://huggingface.co/unsloth/Qwen3.8-27B-GGUF
+
+## 🙏 致谢
+
+感谢 Qwen 团队开源高质量模型，感谢 unsloth 提供优化的 GGUF 量化版本。
