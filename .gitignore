@@ -8,6 +8,9 @@ Modelfile.*.bak-*
 Modelfile.local
 Modelfile.mlx
 
+# 部署包（不在GitHub仓库中，用于国内镜像和离线场景）
+Qwen3.8本地部署指南.tar.gz
+
 # 开发相关（不需要公开）
 CHANGELOG.md
 IDEA.md
