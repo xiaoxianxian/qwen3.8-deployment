@@ -131,9 +131,10 @@ ollama run qwen3.8:27b-mlx "你好，简单介绍一下你自己"
 python3 -c "
 import base64, json, urllib.request
 b64 = base64.b64encode(open('/path/to/image.png','rb').read()).decode()
-p = {'model':'qwen3.8:27b-mlx','messages':[{'role':'user','content':[]}
+p = {'model':'qwen3.8:27b-mlx','messages':[{'role':'user','content':[
   {'type':'text','text':'描述这张图。'},
-  {'type':'image_url','image_url':{'url':f'data:image/png;base64,{b64}'}}]}],
+  {'type':'image_url','image_url':{'url':f'data:image/png;base64,{b64}'}}
+]}],
   'max_tokens':2000, 'stream':False}
 r = urllib.request.urlopen(urllib.request.Request(
   'http://localhost:11434/v1/chat/completions', data=json.dumps(p).encode(),
