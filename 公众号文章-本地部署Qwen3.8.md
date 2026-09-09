@@ -35,7 +35,7 @@ Qwen3.8 支持图片输入，配合 Ollama 的视觉投影，可以在 ChatGPT �
 
 **4. 速度够用**
 
-M5 Pro + 48GB 统一内存，跑 Qwen3.8-27B，MLX 原生版实测约 40 tok/s。
+M5 Pro + 48GB 统一内存，跑 Qwen3.8-27B（MLX 原生版），实测约 40 tok/s。
 
 生成一段代码或分析，基本能接受，不会有那种让人窒息的等待感。
 
@@ -45,13 +45,14 @@ M5 Pro + 48GB 统一内存，跑 Qwen3.8-27B，MLX 原生版实测约 40 tok/s�
 
 我用的是 **Apple M5 Pro + 48GB 统一内存**。
 
-为什么内存很重要？因为 Qwen3.8-27B 全精度模型要 54GB，量化后大概 18GB。
+为什么内存很重要？因为 Qwen3.8-27B 全精度模型要 54GB，量化后大概 18~28GB（取决于量化档位和引擎）。
 
 统一内存的好处是 CPU 和 GPU 共享，不需要像 NVIDIA 那样考虑显存够不够。
 
 **最低配置建议：**
 
-- 内存 ≥ 32GB（跑 MLX 原生版）
+- 内存 ≥ 32GB（跑 GGUF 方案）
+- 内存 ≥ 24GB（跑 MLX 原生版，约 18GB）
 - 硬盘空间 ≥ 50GB（模型文件+缓存）
 - 必须用 Apple Silicon（M1/M2/M3/M4/M5），这是当前最优路径
 
@@ -73,21 +74,20 @@ ollama --version
 
 ### 第二步：下载 MLX 原生版模型
 
-**关键：地址别下错了！**
+**关键：直接用 Ollama 标签，不要手动下 GGUF！**
 
-正确的官方标签：
-
-```
+```bash
 ollama pull qwen3.8:27b-mlx
 ```
 
-这会自动从 HuggingFace 下载 MLX 原生量化版本（nvfp4，18GB）。
+这会自动从 HuggingFace 下载 MLX 原生量化版本（nvfp4，约 18GB）。
 
 **为什么要用 MLX 原生版？**
 
-我之前也试过 GGUF 方案，但 MLX 原生版有三大优势：
+我试过 GGUF 方案，但 MLX 原生版有三大优势：
+
 1. **速度快约 2 倍**：M5 Pro 上代码生成 40.8 tok/s vs GGUF 22.4 tok/s
-2. **首 token 延迟低**：从分钟级降到 3-4 秒（关键！）
+2. **首 token 延迟低**：3-4 秒即出字（GGUF 方案在内存紧张时会触发 swap，首 token 可能要等几分钟）
 3. **自动开 MTP 投机解码**：接受率约 0.90，无需手动配置
 
 ### 第三步：配置全局环境变量
@@ -131,7 +131,7 @@ ollama run qwen3.8:27b-mlx "你好，简单介绍一下你自己"
 python3 -c "
 import base64, json, urllib.request
 b64 = base64.b64encode(open('/path/to/image.png','rb').read()).decode()
-p = {'model':'qwen3.8:27b-mlx','messages':[{'role':'user','content':[
+p = {'model':'qwen3.8:27b-mlx','messages':[{'role':'user','content':[]}
   {'type':'text','text':'描述这张图。'},
   {'type':'image_url','image_url':{'url':f'data:image/png;base64,{b64}'}}]}],
   'max_tokens':2000, 'stream':False}
