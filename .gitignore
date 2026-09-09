@@ -16,3 +16,7 @@ IDEA.md
 # 文档子目录（已合并到主文件）
 docs/
 scripts/
+
+# 公众号文章（不在GitHub仓库中）
+公众号文章-*.html
+公众号文章-*.md
