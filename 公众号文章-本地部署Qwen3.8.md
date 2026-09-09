@@ -205,9 +205,9 @@ claude --model qwen3.8:27b-mlx
 
 | 工具 | 切换命令示例 |
 |------|-------------|
-| OpenCode | `opencode -m ollama/qwen3.8:27b-mlx` |
+| OpenCode | `opencode --model ollama/qwen3.8:27b-mlx` |
 | Trae | 设置 → Models → 添加本地 Ollama 端点 |
-| Codex | `codex -m ollama/qwen3.8:27b-mlx` |
+| Codex | `codex --model ollama/qwen3.8:27b-mlx` |
 | Hermes Agent | 在会话中使用 `/model` 命令切换 |
 
 ### 4.2 切回云端
