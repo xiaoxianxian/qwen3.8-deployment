@@ -176,20 +176,30 @@ Qwen3.8 本地跑起来后，就可以配合各种 Agent 工具使用了。
 **以 Claude Code 为例（常用斜杠命令）：**
 
 ```bash
-# 方法1：启动时指定模型
-claude --model ollama/qwen3.8:27b-mlx
+# 方法1：启动时指定本地模型（需要配置环境变量）
+# 先设置环境变量指向 Ollama
+export ANTHROPIC_BASE_URL=http://localhost:11434
+export ANTHROPIC_AUTH_TOKEN=ollama
+export ANTHROPIC_API_KEY=""
+claude --model qwen3.8:27b-mlx
 
-# 方法2：会话中切换模型
-/model ollama/qwen3.8:27b-mlx
+# 方法2：会话中切换模型（仅适用于云端模型）
+/model  # 回车后从菜单选择
+/model sonnet  # 切换到 Sonnet
 
 # 方法3：配置项目级默认模型
 # 在项目根目录创建 .claude/settings.json
 # {
-#   "models": {
-#     "default": "ollama/qwen3.8:27b-mlx"
-#   }
+#   "env": {
+#     "ANTHROPIC_BASE_URL": "http://localhost:11434",
+#     "ANTHROPIC_AUTH_TOKEN": "ollama",
+#     "ANTHROPIC_API_KEY": ""
+#   },
+#   "model": "qwen3.8:27b-mlx"
 # }
 ```
+
+**注意：** Claude Code 的 `/model` 命令只能切换 Claude 官方模型（sonnet、opus 等）。如果要使用本地 Ollama 模型，需要通过环境变量 `ANTHROPIC_BASE_URL` 配置，然后启动时指定模型名。
 
 **其他主流 Agent 工具的类似命令：**
 

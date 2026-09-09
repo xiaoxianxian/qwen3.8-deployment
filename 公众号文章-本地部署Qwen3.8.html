@@ -278,19 +278,30 @@ print(json.loads(r.read())['choices'][0]['message']['content'])
   
   <p><strong>以 Claude Code 为例（常用斜杠命令）：</strong></p>
   
-  <pre><code># 方法1：启动时指定模型
-claude --model ollama/qwen3.8:27b-mlx
+  <pre><code># 方法1：启动时指定本地模型（需要配置环境变量）
+# 先设置环境变量指向 Ollama
+export ANTHROPIC_BASE_URL=http://localhost:11434
+export ANTHROPIC_AUTH_TOKEN=ollama
+export ANTHROPIC_API_KEY=""
+claude --model qwen3.8:27b-mlx
 
-# 方法2：会话中切换模型
-/model ollama/qwen3.8:27b-mlx
+# 方法2：会话中切换模型（仅适用于云端模型）
+/model  # 回车后从菜单选择
+/model sonnet  # 切换到 Sonnet
 
 # 方法3：配置项目级默认模型
 # 在项目根目录创建 .claude/settings.json
 # {
-#   "models": {
-#     "default": "ollama/qwen3.8:27b-mlx"
-#   }
-# }</code></pre>
+#   "env": {
+#     "ANTHROPIC_BASE_URL": "http://localhost:11434",
+#     "ANTHROPIC_AUTH_TOKEN": "ollama",
+#     "ANTHROPIC_API_KEY": ""
+#   },
+#   "model": "qwen3.8:27b-mlx"
+# }
+</code></pre>
+  
+  <p><strong>注意：</strong>Claude Code 的 <code>/model</code> 命令只能切换 Claude 官方模型（sonnet、opus 等）。如果要使用本地 Ollama 模型，需要通过环境变量 <code>ANTHROPIC_BASE_URL</code> 配置，然后启动时指定模型名。</p>
   
   <p><strong>其他主流 Agent 工具的类似命令：</strong></p>
   
