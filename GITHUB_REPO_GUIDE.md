@@ -9,6 +9,7 @@
 - ❌ 调试脚本（scripts/, docs/）
 - ❌ 内部测试文档（调优与避坑指南.md）
 - ❌ 备份文件（Modelfile.*.bak-* 等）
+- ❌ .DS_Store 等系统文件（见 .gitignore）
 
 **用户可以获取的内容：**
 - ✅ 完整部署教程（README.md）
@@ -85,3 +86,42 @@ GitHub 的 README.md 应该是**完整的技术教程**，包含：
 - GitHub README：技术文档风格，步骤清晰
 - 项目博客/公众号：经验分享风格，有故事有感受
 - 两者分工明确，互不替代
+
+## 💡 经验教训（2026-09-09）
+
+### 问题
+最初将公众号文章、开发记录等文件也上传到了 GitHub 仓库，导致仓库内容混乱，用户可能获取到不必要的信息。
+
+### 解决
+1. 明确区分 GitHub 仓库的定位：只放部署相关文件
+2. 公众号文章保留在本地，供分享使用
+3. 编写 GITHUB_REPO_GUIDE.md 作为规范文档
+4. 使用 `git rm --cached` 从 git 追踪中移除文件（本地保留）
+
+### 命令
+```bash
+# 从 git 追踪中移除文件（保留本地）
+git rm --cached 公众号文章-本地部署Qwen3.8.html
+git rm --cached 公众号文章-本地部署Qwen3.8.md
+
+# 提交并推送
+git add -A
+git commit -m "chore: 从GitHub仓库移除公众号文章"
+git push origin main
+```
+
+---
+
+## 📋 仓库内容规范
+
+| 文件类型 | GitHub 仓库 | 本地保留 | 部署包 |
+|---------|-------------|---------|--------|
+| README.md（教程） | ✅ | ✅ | ✅ |
+| setup-guide.md | ✅ | ✅ | ✅ |
+| CURRENT_CONFIG.md | ✅ | ✅ | ✅ |
+| Modelfile | ✅ | ✅ | ✅ |
+| verify-ollama.sh | ✅ | ✅ | ✅ |
+| 部署包 .tar.gz | ✅ | ✅ | ✅ |
+| 公众号文章 | ❌ | ✅ | ❌ |
+| 开发记录 | ❌ | ✅ | ❌ |
+| 调试脚本 | ❌ | ✅ | ❌ |
