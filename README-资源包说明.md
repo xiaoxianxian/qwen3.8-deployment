@@ -4,21 +4,22 @@
 
 ```
 Qwen3.8本地部署指南.tar.gz
-├── README.md                         # 完整部署教程（必看）
-├── setup-guide.md                    # 详细部署步骤（可选参考）
-├── CURRENT_CONFIG.md                 # 本机配置快照（参数速查）
-├── Modelfile                         # Ollama 模型配置模板
-├── verify-ollama.sh                  # 一键验证安装是否成功
-└── README-资源包说明.md              # 本文件
+├── README.md                        # 完整部署教程（主文档）
+├── setup-guide.md                   # 详细部署步骤（备选参考）
+├── CURRENT_CONFIG.md                # 本机配置快照（参数速查）
+├── Modelfile                        # Ollama 模型配置模板
+├── verify-ollama.sh                 # 一键验证脚本
+├── 性能对比与量化指南.md            # ⭐ 量化版本选择与性能对比
+└── README-资源包说明.md             # 本文件
 ```
 
 ## 📋 文件用途
 
 | 文件 | 用途 |
 |------|------|
-| `README.md` | ⭐ 完整部署教程，从零开始一步步指导 |
+| `README.md` | ⭐ 完整部署教程，从零开始一步步指导（含量化版本选择） |
 | `setup-guide.md` | 详细步骤说明（同上，可二选一阅读） |
-| `CURRENT_CONFIG.md` | 当前配置参数速查表 |
+| `性能对比与量化指南.md` | 量化版本对比（Q4/Q5/Q6/Q8）和引擎性能数据（MLX vs GGUF）|
 | `Modelfile` | Ollama 模型配置模板，可根据需要修改 |
 | `verify-ollama.sh` | 验证安装是否成功，一键检测所有配置 |
 
@@ -50,8 +51,9 @@ cat README.md
 ## ⚠️ 注意事项
 
 - 国内用户建议使用 hf-mirror.com 或 ModelScope 镜像下载模型
-- 模型推荐：**MLX 原生版** `qwen3.8:27b-mlx`（速度快约 2 倍）
-- 硬件要求：≥ 24GB 内存（MLX），≥ 32GB 内存（GGUF）
+- 模型推荐：**MLX 原生版** `qwen3.8:27b-mlx`（速度快约2倍）
+- 硬件要求：≥ 16GB 内存（可跑Q4），≥ 24GB 内存（推荐MLX），≥ 48GB 内存（可选Q8极致质量）
+- 详细量化选择请参考 [性能对比与量化指南.md](./性能对比与量化指南.md)
 - 文档里的 `<你的用户名>` 是路径占位符，需替换为自己的实际路径
 
 ## 🔗 相关资源
