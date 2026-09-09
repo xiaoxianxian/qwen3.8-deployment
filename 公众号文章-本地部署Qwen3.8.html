@@ -173,19 +173,20 @@
 <p>做 B 端产品的人最怕的就是数据泄露，这个方案彻底解决了这个问题。</p>
 
 <p><strong>4. 速度够用</strong></p>
-<p>M5 Pro + 48GB 统一内存，跑 Qwen3.8-27B，MLX 原生版实测约 <span class="highlight">40 tok/s</span>。</p>
+<p>M5 Pro + 48GB 统一内存，跑 Qwen3.8-27B（MLX 原生版），实测约 <span class="highlight">40 tok/s</span>。</p>
 <p>生成一段代码或分析，基本能接受，不会有那种让人窒息的等待感。</p>
 
 <h2>二、硬件门槛——我的配置</h2>
 
 <p>我用的是 <strong>Apple M5 Pro + 48GB 统一内存</strong>。</p>
 
-<p>为什么内存很重要？因为 Qwen3.8-27B 全精度模型要 54GB，量化后大概 18GB。</p>
+<p>为什么内存很重要？因为 Qwen3.8-27B 全精度模型要 54GB，量化后大概 18~28GB（取决于量化档位和引擎）。</p>
 <p>统一内存的好处是 CPU 和 GPU 共享，不需要像 NVIDIA 那样考虑显存够不够。</p>
 
 <p><strong>最低配置建议：</strong></p>
 <ul>
-  <li>内存 ≥ 32GB（跑 MLX 原生版）</li>
+  <li>内存 ≥ 32GB（跑 GGUF 方案）</li>
+  <li>内存 ≥ 24GB（跑 MLX 原生版，约 18GB）</li>
   <li>硬盘空间 ≥ 50GB（模型文件+缓存）</li>
   <li>必须用 Apple Silicon（M1/M2/M3/M4/M5），这是当前最优路径</li>
 </ul>
@@ -201,18 +202,18 @@
 <p>如果输出版本号（建议 0.33+），说明装好了。</p>
 
 <h3>第二步：下载 MLX 原生版模型</h3>
-<p><strong>关键：地址别下错了！</strong></p>
-<p>正确的官方标签：</p>
+<p><strong>关键：直接用 Ollama 标签，不要手动下 GGUF！</strong></p>
+<p>正确的命令：</p>
 
 <pre><code>ollama pull qwen3.8:27b-mlx</code></pre>
 
-<p>这会自动从 HuggingFace 下载 MLX 原生量化版本（nvfp4，18GB）。</p>
+<p>这会自动从 HuggingFace 下载 MLX 原生量化版本（nvfp4，约 18GB）。</p>
 
 <p><strong>为什么要用 MLX 原生版？</strong></p>
-<p>我之前也试过 GGUF 方案，但 MLX 原生版有三大优势：</p>
+<p>我试过 GGUF 方案，但 MLX 原生版有三大优势：</p>
 <ol>
   <li><strong>速度快约 2 倍</strong>：M5 Pro 上代码生成 40.8 tok/s vs GGUF 22.4 tok/s</li>
-  <li><strong>首 token 延迟低</strong>：从分钟级降到 3-4 秒（关键！）</li>
+  <li><strong>首 token 延迟低</strong>：3-4 秒即出字（GGUF 方案在内存紧张时会触发 swap，首 token 可能要等几分钟）</li>
   <li><strong>自动开 MTP 投机解码</strong>：接受率约 0.90，无需手动配置</li>
 </ol>
 
@@ -418,9 +419,9 @@ pkill -f "ollama serve" && sleep 2 && open -a Ollama</code></pre>
   <p><strong>Jason 的落地思考</strong><br>
   一线实战派，记录 AI 商业化与 B 端数字化的落地观察。不聊概念，只聊怎么从 PPT 落到。</p>
   
-  <p>公众号 | 收录于 AI本地部署</p>
-  
+  <p>公众号</p>
   <p>如果觉得有用，欢迎转发分享给更多需要的朋友</p>
+  <p>收录于 AI本地部署</p>
 </div>
 
 </body>
