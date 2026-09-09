@@ -203,8 +203,15 @@ claude --model ollama/qwen3.8:27b-mlx
 ### 4.2 切回云端
 
 ```bash
-# Claude Code 切回云端（以 Claude Sonnet 5 为例）
-/model claude-sonnet-5
+# 方法1：交互式切换（推荐）
+/model  # 回车后从菜单选择模型
+
+# 方法2：命令行直接指定
+claude --model claude-sonnet-5
+
+# 方法3：环境变量（适合切换本地/云端）
+export ANTHROPIC_BASE_URL=""  # 清空指向本地
+export ANTHROPIC_API_KEY="your-api-key"  # 设置你的API Key
 ```
 
 ---
