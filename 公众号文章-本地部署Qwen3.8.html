@@ -311,6 +311,19 @@ claude --model ollama/qwen3.8:27b-mlx
   
   <p>这部分是我踩过的坑，大家可以直接跳过，但如果遇到问题可以参考排查思路。</p>
   
+  <h3>弯路0：MLX 超时 bug 的反复</h3>
+  
+  <p><strong>我的完整历程：</strong></p>
+  <p>一开始我确实先试了 MLX 原生版 <code>qwen3.8:27b-mlx</code>，但当时用的 Ollama 版本有个已知 bug——<a href="https://github.com/ollama/ollama/issues/16081">GitHub Issue #16081</a>，MLX runner 在处理大上下文时会被一个 10 秒的 watchdog timeout 杀死，报错 <code>context canceled</code>。</p>
+  <p>这个 bug 在 Ollama v0.23.1/v0.23.2 引入，我那时候刚好踩到了。试了好几种办法都超时，最后只能放弃 MLX，转而走 GGUF + Metal 的路线。</p>
+  <p>最近在社区里看到这个问题已经被修复了（commit 2b9e024），于是我又切回 MLX 原生版试试——结果效果意外的好：不仅解决了超时问题，速度还比 GGUF 快将近 2 倍。</p>
+  
+  <p><strong>教训：</strong></p>
+  <ul>
+    <li>遇到 MLX 超时问题时，先查一下是不是已知的 Ollama bug，可能只需要升级版本</li>
+    <li>MLX 原生版的性能优势远超预期，值得再试一次</li>
+  </ul>
+  
   <h3>弯路1：MLX 原生版 vs GGUF + MLX 引擎</h3>
   
   <p><strong>我的错误尝试：</strong></p>
