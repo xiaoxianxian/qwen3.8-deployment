@@ -91,10 +91,10 @@ ollama pull qwen3.8:27b-mlx
 
 **方案 B：直接用 ModelScope（魔搭社区）**
 ```bash
-# 先用 python 从 ModelScope 下载
+# 先用 python 从 ModelScope 下载（官方模型 ID）
 pip install modelscope
-python -c "from modelscope import snapshot_download; snapshot_download('unsltl/Qwen3.8-27B-MLX', cache_dir='./models')"
-# 然后手动创建 Ollama 模型
+python -c "from modelscope import snapshot_download; snapshot_download('Qwen/Qwen3.8-27B', cache_dir='./models')"
+# 然后用本地文件创建 Ollama 模型
 ollama create qwen3.8:27b-mlx -f ./Modelfile
 ```
 
