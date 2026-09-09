@@ -11,12 +11,24 @@
 - ❌ 备份文件（Modelfile.*.bak-* 等）
 - ❌ .DS_Store 等系统文件（见 .gitignore）
 
-**用户可以获取的内容：**
-- ✅ 完整部署教程（README.md）
-- ✅ 配置模板（Modelfile）
-- ✅ 验证脚本（verify-ollama.sh）
-- ✅ 参数速查（CURRENT_CONFIG.md）
-- ✅ 部署包（Qwen3.8本地部署指南.tar.gz）
+## 📦 部署包说明
+
+**部署包（.tar.gz）的定位：**
+- 国内镜像站点的下载链接（hf-mirror、ModelScope）
+- 微信公众号文章里的"一键下载"方案
+- 不想注册GitHub账号的用户替代方案
+- 离线使用场景
+
+**部署包不包含在GitHub仓库内**，但本地保留，用于上述场景。
+
+**部署包内容：**
+- README.md（部署教程）
+- setup-guide.md（详细步骤）
+- CURRENT_CONFIG.md（参数速查）
+- Modelfile（配置模板）
+- verify-ollama.sh（验证脚本）
+- README-资源包说明.md（使用说明）
+- 性能对比与量化指南.md（量化选择参考）
 
 ## 📂 仓库结构
 
@@ -27,8 +39,8 @@ qwen3.8-local-deployment/
 ├── CURRENT_CONFIG.md             # 本机配置快照
 ├── Modelfile                     # Ollama 模型配置模板
 ├── verify-ollama.sh              # 一键验证脚本
-├── README-资源包说明.md          # 资源包说明
-├── Qwen3.8本地部署指南.tar.gz    # 部署包（下载即用）
+├── 性能对比与量化指南.md         # 量化版本选择参考
+├── README-资源包说明.md          # 资源包说明（可选参考）
 └── .gitignore                    # Git 忽略规则
 ```
 
@@ -121,7 +133,9 @@ git push origin main
 | CURRENT_CONFIG.md | ✅ | ✅ | ✅ |
 | Modelfile | ✅ | ✅ | ✅ |
 | verify-ollama.sh | ✅ | ✅ | ✅ |
-| 部署包 .tar.gz | ✅ | ✅ | ✅ |
+| 性能对比与量化指南.md | ✅ | ✅ | ✅ |
+| README-资源包说明.md | ✅ | ✅ | ✅ |
+| 部署包 .tar.gz | ❌ | ✅ | ✅ |
 | 公众号文章 | ❌ | ✅ | ❌ |
 | 开发记录 | ❌ | ✅ | ❌ |
 | 调试脚本 | ❌ | ✅ | ❌ |
