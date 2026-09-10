@@ -48,7 +48,7 @@ pkill -f "ollama serve" && sleep 2 && open -a Ollama
 
 | 工具 | 状态 | 版本 |
 |------|------|------|
-| Ollama | ✅ 运行中 | 0.5.3+ |
+| Ollama | ✅ 运行中 | 0.33.3 |
 | Python | ✅ | 3.11.x |
 | pip | ✅ | 24.x |
 
