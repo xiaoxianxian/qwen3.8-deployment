@@ -80,12 +80,12 @@ brew install ollama
 ### 第四步：下载模型
 
 ```bash
-# 国内镜像下载（推荐）
-export HF_ENDPOINT=https://hf-mirror.com
-ollama pull unsloth/Qwen3.8-27B-GGUF:Qwen3.8-27B-UD-Q5_K_M
+# 方案一（推荐）：MLX 原生版，速度快、自带视觉
+export HF_ENDPOINT=https://hf-mirror.com   # 国内镜像，可不设
+ollama pull qwen3.8:27b-mlx
 
-# 或从 HuggingFace 直接下载（需代理）
-ollama pull unsloth/Qwen3.8-27B-GGUF:Qwen3.8-27B-UD-Q5_K_M
+# 方案二（并发/长 agent 备选）：GGUF Q5_K_M，llama.cpp 并发更稳
+# ollama pull unsloth/Qwen3.8-27B-GGUF:Qwen3.8-27B-UD-Q5_K_M
 ```
 
 ### 第五步：创建本地模型
@@ -93,7 +93,7 @@ ollama pull unsloth/Qwen3.8-27B-GGUF:Qwen3.8-27B-UD-Q5_K_M
 ```bash
 # 创建自定义模型配置
 cat > Modelfile << 'EOF'
-FROM qwen3.8:27b-ud-q5_k_m
+FROM qwen3.8:27b-mlx
 
 # 上下文窗口设置
 PARAMETER num_ctx 131072
@@ -190,6 +190,13 @@ print(response.choices[0].message.content)
 
 ### Q4: 需要联网吗？
 不需要。本地模型完全离线运行，无需联网。
+
+### Q5: MLX 跑 128K 上下文会爆显存吗？
+单跑不会。2026-09-10 的 A/B 实测中，MLX 在 131072 上下文 + MTP 下 5 维题 2 轮 **10/10 全过、零 OOM**。之前偶发的「间歇性显存溢出」，根因是**多个会话/进程同时调同一个 MLX 模型**，KV 缓存显存叠加——不是 128K 上下文太大。
+
+- 日常单跑 / 短中交互：直接用 `qwen3.8-local`（MLX，满血 131k + MTP），最快最稳。
+- 长 agent 多会话并发：改用 `qwen3.8-q5`（GGUF + llama.cpp，并发更稳）。
+- 别让 Hermes 与 WorkBuddy 同时并发调 MLX，错峰即可。
 
 ## 📚 参考文档
 

@@ -1,71 +1,27 @@
-# Qwen3.8-27B Modelfile 模板（Ollama ≥ 0.33）
-# 使用说明：
-#   1. 把下面两处 <你的用户名> 替换成实际路径（如 /Users/zhangsan）
-#      推荐用绝对路径，Ollama 对相对路径支持不稳定
-#   2. 重建模型：ollama create qwen3.8-local -f ~/models/Modelfile
+# Qwen3.8-27B 部署模板（生产在用，M5 Pro 48GB / Ollama 0.33.3）
+# 重建：ollama create qwen3.8-local -f Modelfile
 #
-# ⚠️ 关键语法（Ollama 0.33 起变更，2026-09 验证）：
-#   - 挂载视觉投影 mmproj 必须用「第二个 FROM 行」
-#   - 旧的 `PROJECTOR /path/mmproj.gguf` 写法在 0.33 已失效，会报：
-#     Error: command must be one of "from", "license", "template", ...
-#   - 判断依据：ollama show <模型名> 出现 Projector(clip) 且 Capabilities 含 vision
+# 模型：官方 MLX 原生版 qwen3.8:27b-mlx（18GB，nvfp4 量化）
+#   - 自带多模态模板 + vision projector + 内嵌 MTP 投机解码头
+#   - 因此无需第二行 FROM mmproj、也无需手写 TEMPLATE（GGUF 路线才需要）
+#
+# 并发说明（2026-09-10 A/B 实测）：
+#   - MLX 单跑 131k + MTP 在 48GB 上稳定（10/10 全过，零 OOM）
+#   - 多个会话/进程同时调同一个 MLX 模型时，KV 缓存显存叠加会 OOM
+#   - 长 agent 多会话并发场景，改用 qwen3.8-q5（GGUF + llama.cpp，并发更稳）
 
-FROM /Users/<你的用户名>/models/qwen3.8-27b-Q5.gguf
-FROM /Users/<你的用户名>/models/mmproj-F16.gguf
+FROM qwen3.8:27b-mlx
 
-# ── 聊天模板（⚠️ 必须显式写，否则图片必报错）──────────────
-# 该 GGUF 不内嵌 chat_template，Ollama 会退回默认裸模板 `{{ .Prompt }}`，
-# 导致走 OpenAI /v1 端点发图时报：No data iterator found for token: <|video_pad|>
-# 现象：WorkBuddy 等走 /v1/chat/completions 的客户端发图直接 400 失败。
-# 下面这份 Qwen 多模态模板会让 Ollama 把图像张量正确绑到 <|image_pad|> 占位符。
-# （Ollama 模板引擎不支持数组索引/切片，故用 {{ .Content }} 让引擎自动渲染多模态内容）
-TEMPLATE """{{- if .System }}<|im_start|>system
-{{ .System }}<|im_end|>
-{{ end }}
-{{- range .Messages }}
-{{- if eq .Role "user" }}<|im_start|>user
-{{ .Content }}<|im_end|>
-{{ else if eq .Role "assistant" }}<|im_start|>assistant
-{{ if .Content }}{{ .Content }}{{ end }}{{ if .ReasoningContent }}<think>{{ .ReasoningContent }}</think>{{ end }}<|im_end|>
-{{ end }}
-{{- end }}<|im_start|>assistant
-{{ if .ReasoningContent }}<think>{{ .ReasoningContent }}</think>{{ end }}{{ .Response }}"""
-
-# ── 上下文窗口 ────────────────────────────────────────────
-# num_ctx=131072 是实测最佳平衡点：
-#   - 262144：模型膨胀到 38GB，速度降至 ~3 tok/s（太慢）
-#   - 65536：  图片+长历史易触发 400（exceeds context）
-#   - 131072：内存 28GB，100% GPU，~9.7 tok/s，足够装下图片+长历史
-# 注意：一张 1024×1024 图片实测仅 ~1084 tokens，不是文档里写的 "13 万"。
-# 400 报错的真正原因是「图片 + 长对话历史」总和超过 num_ctx，不是单张图吃掉所有预算。
-# 调用方需保证 options.num_predict ≥ 2000（或传 think=false），否则 Qwen3.8 默认开启
-# 思考模式会把 token 预算全部耗尽在 thinking 字段，content 返回空字符串。
+# 上下文窗口：131072 是实测最佳平衡（28GB 内存、100% GPU、单跑稳定）
+# 之前误以为需砍到 32768 防 OOM，实测是并发导致，单跑 131k 无压力
 PARAMETER num_ctx 131072
 
-# ── MTP 投机解码（⚠️ 2026-09-07 新增，单项最大提速）──────────
-# Qwen3.8 训练时自带 MTP（Multi-Token Prediction）头，GGUF 中以 blk.64.nextn.* 保留。
-# Ollama 官方文档原话："embedded MTP tensors require setting this parameter"
-#   —— 内嵌 MTP 头必须显式设置才生效，默认 0 = 关闭，等于白扔模型自带的加速硬件。
-# 判断你的 GGUF 有没有这个头（有输出=有）：
-#   python3 -c "import re;print(set(m.group(0) for m in re.finditer(rb'[a-zA-Z0-9_.]{2,80}nextn[a-zA-Z0-9_.]{0,40}', open('模型.gguf','rb').read(6*1024*1024))))"
-# M5 Pro 48GB 实测（num_ctx=32768，关思考，200 token）：
-#   场景         draft=0   draft=3   draft=4
-#   代码生成      11.71     19.89     21.62   ← 4 最快(+85%)
-#   开放式文本    10.29     11.80      9.92   ← 4 反而掉速(-4%)
-#   列表/结构化    9.71       —        14.43   ← 4 最快(+49%)
-# 推荐 3：唯一「全场景正收益」档位（代码 +70%、开放式 +15%）。
-# 负载几乎全是代码/工具调用/JSON 时可调到 4 再榨 9%；大于 6 会明显掉速。
-# 无损加速：draft token 只有被主模型确认才保留，不改变输出分布。
-# 生效验证：server.log 应出现 `specu: - n_max=3` 和 `draft acceptance = 0.6~0.85`
+# MTP 投机解码：Qwen3.8 内嵌 MTP 头，但默认 draft=0（关闭），必须显式开启
+# 实测代码生成 ~11.7 → ~37.8 tok/s（约 3.9×），无损
 PARAMETER draft_num_predict 3
 
-# ── 采样参数（官方推荐值）──────────────────────────────────
+# 采样参数（官方推荐）
 PARAMETER temperature 0.7
 PARAMETER top_p 0.95
 PARAMETER top_k 20
 PARAMETER min_p 0.0
-
-# ── 服务侧配套（不在本文件，需设环境变量，见 setup-guide.md 第八节）──
-#   OLLAMA_KEEP_ALIVE=30m       模型驻留内存 30 分钟，避免每次重载
-#   OLLAMA_FLASH_ATTENTION=1    降低长上下文内存占用
-#   OLLAMA_KV_CACHE_TYPE=q8_0   KV 缓存量化，131072+ 上下文推荐
