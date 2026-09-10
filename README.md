@@ -107,7 +107,7 @@ PARAMETER top_p 0.95
 PARAMETER top_k 20
 EOF
 
-ollama create qwen3.8-local -f Modelfile
+ollama create qwen3.8:27b-mlx -f Modelfile
 ```
 
 ### 第六步：配置全局环境变量
@@ -134,13 +134,13 @@ pkill -f "ollama serve" && sleep 2 && open -a Ollama
 
 ```bash
 # 测试对话
-ollama run qwen3.8-local "你好，请用一句话介绍你自己"
+ollama run qwen3.8:27b-mlx "你好，请用一句话介绍你自己"
 
 # 测试代码生成
-ollama run qwen3.8-local "写一个 Python 快速排序算法"
+ollama run qwen3.8:27b-mlx "写一个 Python 快速排序算法"
 
 # 测试图片理解（需添加视觉模型）
-ollama run qwen3.8-local "描述这张图片的内容" --images image.jpg
+ollama run qwen3.8:27b-mlx "描述这张图片的内容" --images image.jpg
 ```
 
 ## 🔗 API 调用
@@ -156,7 +156,7 @@ client = OpenAI(
 )
 
 response = client.chat.completions.create(
-    model="qwen3.8-local",
+    model="qwen3.8:27b-mlx",
     messages=[{"role": "user", "content": "你好"}],
     temperature=0.7,
     max_tokens=2000
@@ -193,7 +193,7 @@ MLX 原生版 `qwen3.8:27b-mlx` 自带视觉投影，直接发图即可，无需
 ### Q5: MLX 跑 128K 上下文会爆显存吗？
 单跑不会。2026-09-10 的 A/B 实测中，MLX 在 131072 上下文 + MTP 下 5 维题 2 轮 **10/10 全过、零 OOM**。之前偶发的「间歇性显存溢出」，根因是**多个会话/进程同时调同一个 MLX 模型**，KV 缓存显存叠加——不是 128K 上下文太大。
 
-- 日常单跑 / 短中交互：直接用 `qwen3.8-local`（MLX，满血 131k + MTP），最快最稳。
+- 日常单跑 / 短中交互：直接用 `qwen3.8:27b-mlx`（MLX，满血 131k + MTP），最快最稳。
 - 长 agent 多会话并发：改用 `qwen3.8-q5`（GGUF + llama.cpp，并发更稳）。
 - 别让 Hermes 与 WorkBuddy 同时并发调 MLX，错峰即可。
 

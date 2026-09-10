@@ -31,14 +31,14 @@ ollama list
 echo ""
 
 # 检查目标模型是否存在
-MODEL_NAME="qwen3.8-local"
+MODEL_NAME="qwen3.8:27b-mlx"
 if ! ollama list | grep -q "$MODEL_NAME"; then
     echo "⚠️  模型 $MODEL_NAME 未找到"
     echo ""
     echo "🔧 请手动创建模型："
     echo "   1. 下载模型文件到 ~/models/"
     echo "   2. 编辑 ~/models/Modelfile，修改路径"
-    echo "   3. 执行：ollama create qwen3.8-local -f ~/models/Modelfile"
+    echo "   3. 执行：ollama create qwen3.8:27b-mlx -f ~/models/Modelfile"
     exit 1
 fi
 echo "✅ 模型 $MODEL_NAME 已安装"
@@ -80,7 +80,7 @@ echo "  2. 在 providers 下添加："
 echo "     ollama:"
 echo "       name: Ollama (Local)"
 echo "       base_url: http://localhost:11434/v1"
-echo "       model: qwen3.8-local:latest"
+echo "       model: qwen3.8:27b-mlx"
 echo "       discover_models: true"
-echo "  3. 在 Hermes 中输入：/model ollama/qwen3.8-local:latest"
+echo "  3. 在 Hermes 中输入：/model ollama/qwen3.8:27b-mlx"
 echo ""
