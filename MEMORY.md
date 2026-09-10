@@ -21,7 +21,7 @@
 ## 三、提速与关键开关
 - **MTP 投机解码（已启用）**：Modelfile 含 `PARAMETER draft_num_predict 3`；代码生成实测 ~21 → **37.8 tok/s decode**（约 3.9×）。
   - ⚠️ 旧值 65536 会触发 400 报错（图片+长历史溢出）；262144 太慢（~3 tok/s），不推荐。
-- ⚠️ **MLX 后端不可用（已验证 2026-09-07）**：Ollama 0.33.3 二进制虽编译了 MLX 库，但正确开关是 `OLLAMA_LLM_LIBRARY=mlx`（不是 `OLLAMA_BACKEND`）；实测强制后 runner 仍走 `ggml_metal` + llama.cpp，**Qwen3.8 架构不在 MLX 支持列表，静默回退 Metal**。结论：对 qwen3.8 提速只有 MTP 一条路，别再试 MLX。
+- ⚠️ **GGUF 强行走 MLX 引擎不可用（已验证 2026-09-07）**：Ollama 0.33.3 二进制虽编译了 MLX 库，但正确开关是 `OLLAMA_LLM_LIBRARY=mlx`（不是 `OLLAMA_BACKEND`）；实测强制 GGUF 走 MLX 后 runner 仍走 `ggml_metal` + llama.cpp，**Qwen3.8 架构不在 MLX 支持列表，静默回退 Metal**。注意：这只指「GGUF + 强制 MLX 引擎」这条路；**官方 `qwen3.8:27b-mlx` 原生 MLX 权重走原生 MLX 引擎是正常的**（见第二节），提速杠杆是 MTP + 原生 MLX 引擎。
 - **推理档位实测**：high(~19s, 质量最好) > medium(~22s) > low(~14s, 质量一般)；xhigh 完全不可用（见坑）。
 
 ## 四、致命坑（必读，少踩一个都是赚）
