@@ -39,7 +39,7 @@
 | 首 token 延迟 | 分钟级（swap时） | **3-4 秒** | 质的飞跃 |
 | 内存占用 | ~28 GB | ~21 GB | -25% |
 
-> 💡 **MLX 原生版（qwen3.8:27b-mlx）** 是当前最优选择：速度快约2倍，首字延迟秒级，自动开启MTP投机解码。  
+> 💡 **MLX 原生版（qwen3.8:27b-mlx）** 是当前最优选择：速度快约2倍，首字延迟秒级，需手动开启 MTP 投机解码（draft_num_predict 3）。  
 > 如果追求极致质量且内存充足，可选择 **Q8_K_XL**（8位量化，几乎无损）。
 
 详细对比请参考：[性能对比与量化指南.md](./性能对比与量化指南.md)
@@ -113,15 +113,14 @@ ollama create qwen3.8-local -f Modelfile
 ### 第六步：配置全局环境变量
 
 ```bash
-# macOS 全局配置
-sudo launchctl setenv OLLAMA_CONTEXT_LENGTH 131072
-sudo launchctl setenv OLLAMA_FLASH_ATTENTION 1
-sudo launchctl setenv OLLAMA_KV_CACHE_TYPE q8_0
-sudo launchctl setenv OLLAMA_KEEP_ALIVE 30m
+# macOS 用户级全局配置（Ollama 以用户 LaunchAgent 运行，无需 sudo）
+launchctl setenv OLLAMA_CONTEXT_LENGTH 131072
+launchctl setenv OLLAMA_FLASH_ATTENTION 1
+launchctl setenv OLLAMA_KV_CACHE_TYPE q8_0
+launchctl setenv OLLAMA_KEEP_ALIVE 30m
 
-# 生效配置
-sudo launchctl unload /Library/LaunchDaemons/org.ollama.ollama.plist 2>/dev/null || true
-sudo launchctl load /Library/LaunchDaemons/org.ollama.ollama.plist 2>/dev/null || true
+# 生效配置：重启 Ollama 使环境变量生效
+pkill -f "ollama serve" && sleep 2 && open -a Ollama
 ```
 
 ### 第七步：验证安装
@@ -175,18 +174,18 @@ print(response.choices[0].message.content)
 | 列表结构化 | ~34.2 tok/s |
 | 首 token 延迟 | 3-4 秒 |
 | 内存占用 | ~18GB |
-| MTP 接受率 | ~0.90 |
+| MTP 接受率 | 约 0.6–0.85（runner 日志实测）|
 
 ## 🔧 常见问题
 
 ### Q1: 内存不足怎么办？
-降低 `num_ctx` 到 32768 或换用更小的量化版本（Q4_K_M）。
+优先保持 `num_ctx 131072`（单跑稳定）；内存吃紧时下调到 65536，仍不足再换更小量化（Q4_K_M）。
 
 ### Q2: 生成速度很慢？
 检查是否开启了 Swap，确保模型完全加载到内存。
 
 ### Q3: 图片理解报错？
-确保使用支持视觉的模型（如 `qwen2.5-vl`），并检查图片格式。
+MLX 原生版 `qwen3.8:27b-mlx` 自带视觉投影，直接发图即可，无需额外视觉模型。GGUF 路线需在 Modelfile 写入 Qwen 多模态模板（见弯路3）。
 
 ### Q4: 需要联网吗？
 不需要。本地模型完全离线运行，无需联网。
