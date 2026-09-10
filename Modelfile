@@ -1,5 +1,5 @@
 # Qwen3.8-27B 部署模板（生产在用，M5 Pro 48GB / Ollama 0.33.3）
-# 重建：ollama create qwen3.8-local -f Modelfile
+# 重建：ollama create qwen3.8:27b-mlx -f Modelfile
 #
 # 模型：官方 MLX 原生版 qwen3.8:27b-mlx（18GB，nvfp4 量化）
 #   - 自带多模态模板 + vision projector + 内嵌 MTP 投机解码头
