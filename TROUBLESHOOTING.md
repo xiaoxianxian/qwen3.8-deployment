@@ -147,8 +147,8 @@ launchctl setenv OLLAMA_KEEP_ALIVE 30m
 # 1. 确认模型常驻（避免冷启动）
 ollama ps
 
-# 2. 检查是否触发 swap（有 swap 说明内存不够，会出现分钟级首 token 延迟）
-memory_pressure | grep "Swap"
+# 2. 检查是否触发 swap（有用量说明内存不够，会出现分钟级首 token 延迟）
+sysctl vm.swapusage
 
 # 3. 确认 MTP 已开启（见第 5 节）
 grep "specu" ~/.ollama/logs/server.log | tail
