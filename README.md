@@ -178,6 +178,8 @@ print(response.choices[0].message.content)
 
 ## 🔧 常见问题
 
+> 按现象索引的完整排查手册（9 个常见问题 + 根因 + 修复命令）见 **[TROUBLESHOOTING.md](./TROUBLESHOOTING.md)**，以下为高频简答。
+
 ### Q1: 内存不足怎么办？
 优先保持 `num_ctx 131072`（单跑稳定）；内存吃紧时下调到 65536，仍不足再换更小量化（Q4_K_M）。
 
