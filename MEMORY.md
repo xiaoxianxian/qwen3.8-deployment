@@ -52,3 +52,15 @@
 
 ## 八、参考仓库
 - `t64c6d7mc5-debug/qwen3.8-27b-apple-silicon-agent`：用 mlx-serve + Qwen3.8-27B-MLX-Serve-8bit + Native MTP depth 8，M5 Max 64GB 实测 18.9→65.9 tok/s（~3.5×）。MTP 必须用绝对 --model 路径否则静默 mtp_loaded:false。
+
+---
+
+## 九、外部参考：OpenAI Agents API / Harness 对本地模型角色的启示（2026-09-11）
+
+> 文章核心：模型 API 卖的是智力，Agents API 交付的是「能持续干完活的过程」——**模型本身正变成 commoditized 的地板，不是护城河。** 四对象↔本地栈对照表见 `../multi-proxy/MEMORY.md` §8.2（本项目对应 Agent 对象）。
+
+### 9.1 对迭代规划的具体帮助
+1. **角色定位校准**：`qwen3.8:27b-mlx` 在本地 AI 栈里是 **Agent 对象**（模型+指令+工具）的承载——价值在于「可靠、私有、零成本的本地兜底 / 导演 LLM」，而非模型能力差异化。
+2. **迭代重心**：本项目应继续把力气花在「让模型成为稳如磐石的本地运行时」上——MTP 提速、ctx 131072、Ollama 集成稳定性、多模态模板——即文章说的 Environment 能力，而非追模型智能上限。
+3. **对外写作角度**：文章的「美国数据驻留、无 ZDR」反向证明本地模型（本项目）是隐私/合规场景的必要解；可作为公众号「为何选本地部署」的论据。
+4. **Modelfile 即 Agent 定义**：当前 Modelfile（显式 chat_template + MTP + ctx）已是「Agent 定义」的契约，保持它作为其他 agent 调用的统一接口。
