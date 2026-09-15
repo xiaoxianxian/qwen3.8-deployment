@@ -44,20 +44,21 @@
 | GSQ IQ3_S | ~12 GB | ~13 GB | 基本无损 | 省内存均衡（见下） |
 | GSQ IQ3_XXS | ~10 GB | ~11 GB | GPQA ~-1 分 | 极致省显存 |
 
-### 引擎性能对比（M5 Pro 48GB）
+### 四模型性能总表（M5 Pro 48GB，num_ctx=131072）
 
-| 指标 | GGUF Q5_K_M + MTP | GSQ IQ3_S + MTP | GSQ IQ3_XXS + MTP | MLX nvfp4 + MTP |
-|------|-------------------|-----------------|--------------------|------------------|
-| 平均 decode（12 题统一对照） | 14.9 tok/s | 12.6 tok/s | 12.5 tok/s | **29.9 tok/s** |
-| 代码生成（A1，Agentic Coding） | 17.7 tok/s | 16.2 tok/s | 13.9 tok/s | **39.5 tok/s** |
-| 首 token 延迟（常驻） | 3-4 秒 | 3-4 秒 | 3-4 秒 | 3-4 秒 |
-| 模型体积 | 20 GB | 12 GB | 10 GB | 18 GB |
-| 内存占用（峰值） | ~20 GB | ~12 GB | ~10 GB | ~18 GB |
+| 模型 | 量化 | 体积 | 早期短基准·代码生成¹ | 严格 12 题·平均 decode² | 12 题质量 | 内存占用 |
+|------|------|------|--------------------|------------------------|----------|---------|
+| **MLX 4-bit** | NVFP4 | 18 GB | 40.8 tok/s | **29.9 tok/s** | 12/12 全对 | ~21 GB |
+| **Q5_K_M** | GGUF 5.6bpw | 20 GB | 22.4 tok/s | 14.9 tok/s | 12/12 全对 | ~20 GB |
+| **GSQ IQ3_S** | 3.5bpw 混合 | 12 GB | 16.2 tok/s | 12.6 tok/s | 12/12 全对 | ~12 GB |
+| **GSQ IQ3_XXS** | 3.0bpw 混合 | 10 GB | — | 12.5 tok/s | 12/12 全对 | ~10 GB |
 
-> 以上为 2026-09-15 同条件 A/B：`temperature=0`、12 题、`num_ctx=131072`、q8_0 KV、四模型均开 MTP、串行跑完即卸载。早期短上下文基准（Q5 22.4 / MLX 40.8）见正文第七节与 [A_B实测对比报告.md](./A_B实测对比报告.md)。
+¹ 早期短基准：短上下文、未统一温度、不含 MTP 叠加效应，单任务峰值速度（MLX 早期分项：写作 29.0 / 结构化 34.2 tok/s）。
+² 严格 12 题 A/B：temperature=0、12 题统一对照、四模型均开 MTP、串行跑完即卸载，更可控。两种测法口径不同，倍数不能直接相除，仅作量级参考。
+补充：首 token 延迟均 3-4 秒（常驻）；图片理解 MLX ~17s / Q5 ~24s（GGUF 需挂 mmproj）。
 
-> **MLX 原生版（qwen3.8:27b-mlx）** 是当前最优选择：速度快约2倍，首字延迟秒级。MTP 投机解码须手动开启（draft_num_predict 3），GGUF 与 MLX 通用，非 MLX 独占。  
-> 如果追求极致质量且内存充足，可选择 **Q8_K_XL**（8位量化，几乎无损）。
+> **MLX 原生版（qwen3.8:27b-mlx）** 是当前最优选择：速度快约 2 倍，首字延迟秒级。MTP 投机解码须手动开启（draft_num_predict 3），GGUF 与 MLX 通用，非 MLX 独占。  
+> 如果追求极致质量且内存充足，可选择 **Q8_K_XL**（8 位量化，几乎无损）。
 
 详细对比请参考：[性能对比与量化指南.md](./性能对比与量化指南.md)
 
@@ -109,6 +110,32 @@ ollama pull qwen3.8:27b-mlx
 # 方案二（并发/长 agent 备选）：GGUF Q5_K_M，llama.cpp 并发更稳
 # ollama pull unsloth/Qwen3.8-27B-GGUF:Qwen3.8-27B-UD-Q5_K_M
 ```
+
+**nvfp4**：一种 4-bit 浮点量化格式，把 27B 权重从 50 多 GB 压到 18GB 出头，精度损失克制，是 MLX 版又小又快的基础。
+
+**网络慢或 HuggingFace 访问不了，改用国内镜像：**
+
+```bash
+# 镜像 A：走 hf-mirror.com
+export HF_ENDPOINT=https://hf-mirror.com
+ollama pull qwen3.8:27b-mlx
+
+# 镜像 B：ModelScope（魔搭社区）
+pip install modelscope
+python -c "from modelscope import snapshot_download; snapshot_download('Qwen/Qwen3.8-27B', cache_dir='./models')"
+# 再用仓库内 Modelfile 创建本地模型（见第五步）
+```
+
+**更省显存（≥16GB）：GSQ-RCO IQ3_S / IQ3_XXS**
+
+```bash
+pip install -U "huggingface_hub[cli]"
+hf download ISTA-DASLab/Qwen3.8-27B-GSQ-RCO-GGUF \
+  Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf mmproj-Qwen3.8-27B-BF16.gguf --local-dir .
+# 用第五步的 Modelfile 创建（FROM 换成本地 .gguf 路径）
+```
+
+GSQ-RCO 是 ISTA-DASLab 的学习式混合精度量化：IQ3_S 把 27B 压到 ~12GB 且质量基本无损（GPQA 仅差 0.5 分），比 Q4_K_M 更小更稳；IQ3_XXS（~10GB）更省，但知识题有 ~1 分边际风险。MLX 原生版速度约为 GSQ 混合精度的 2.4 倍；同机还要跑 MiniMax H3 等视频模型、显存吃紧时，GSQ IQ3_S 是省显存均衡首选。
 
 ### 第五步：创建本地模型
 
@@ -180,11 +207,59 @@ launchctl setenv OLLAMA_KEEP_ALIVE 30m
 pkill -f "ollama serve" && sleep 2 && open -a Ollama
 ```
 
+**每个变量的作用：**
+
+| 变量 | 作用 | 不设置的后果 |
+|------|------|-------------|
+| `OLLAMA_CONTEXT_LENGTH=131072` | 全局默认 128K 上下文 | 模型退回 4096 默认值，长文档被静默截断 |
+| `OLLAMA_FLASH_ATTENTION=1` | 长上下文推理提速 30–50% | 速度慢 |
+| `OLLAMA_KV_CACHE_TYPE=q8_0` | KV 缓存量化，内存占用减半 | 内存占用高，可能触发 swap |
+| `OLLAMA_KEEP_ALIVE=30m` | 模型驻留内存 30 分钟 | 每次调用等约 6 秒冷启动 |
+
+> KV 缓存：模型生成时为「已处理过的文字」记录的临时存储，上下文越长占用越大。q8_0 把这块也压缩一档，省显存且精度几乎无损。
+
+> `launchctl setenv` 在重启 Mac 后会失效，重启后重跑一遍即可；想一劳永逸，把变量写进 Ollama 的 LaunchAgent plist。
+
 ### 第七步：验证安装
 
 ```bash
-# 运行验证脚本
+# 查看模型信息
+ollama show qwen3.8:27b-mlx
+
+# 确认上下文长度已生效（应输出 131072，不是 4096）
+ollama show qwen3.8:27b-mlx | grep num_ctx
+
+# 测试对话
+ollama run qwen3.8:27b-mlx "你好，简单介绍一下你自己"
+```
+
+也可以用仓库内的自动化脚本一次性跑完上述检查：
+
+```bash
 ./verify-ollama.sh
+```
+
+**测试图片理解（MLX 自带视觉；GGUF / GSQ 需 Modelfile 已挂 mmproj）：**
+
+```bash
+ollama run qwen3.8:27b-mlx "描述这张图片的内容" --images image.jpg
+```
+
+如需直接调用 `/v1` 接口验证（base64 编码图片）：
+
+```bash
+python3 -c "
+import base64, json, urllib.request
+b64 = base64.b64encode(open('/path/to/image.png','rb').read()).decode()
+p = {'model':'qwen3.8:27b-mlx','messages':[{'role':'user','content':[
+  {'type':'text','text':'描述这张图。'},
+  {'type':'image_url','image_url':{'url':f'data:image/png;base64,{b64}'}}
+]}], 'max_tokens':4000, 'stream':False}
+r = urllib.request.urlopen(urllib.request.Request(
+  'http://127.0.0.1:11434/v1/chat/completions', data=json.dumps(p).encode(),
+  headers={'Content-Type':'application/json'}), timeout=300)
+print(json.loads(r.read())['choices'][0]['message']['content'])
+"
 ```
 
 ### 第八步：使用模型
@@ -224,20 +299,12 @@ response = client.chat.completions.create(
 print(response.choices[0].message.content)
 ```
 
-## 性能数据（M5 Pro / 48GB）
+## 性能数据与实测说明
 
-| 指标 | 数值 |
-|------|------|
-| 代码生成 | ~40.8 tok/s |
-| 开放式写作 | ~29.0 tok/s |
-| 列表结构化 | ~34.2 tok/s |
-| 首 token 延迟 | 3-4 秒 |
-| 内存占用 | ~18GB |
-| MTP 接受率 | 约 0.6–0.85（runner 日志实测）|
+完整速度、体积与质量对比见上方「四模型性能总表」。严格 12 题 A/B 的原始数据、逐题校验与硬件对照见 [A_B实测对比报告.md](./A_B实测对比报告.md)。
 
-> 以上均为 M5 Pro 实测。M1–M4 各代芯片内存带宽差异大，请勿直接套用，以自身硬件实测为准。
->
-> 以上为 MLX 原生版单模型基准（短上下文不同测法，详见第七节「四模型严格 A/B 实测」）。GGUF Q5_K_M（~14.9 tok/s）、GSQ IQ3_S（~12.6 tok/s）的对照与质量校验见同节 A/B 表。
+- MTP 接受率：约 0.6–0.85（runner 日志实测）
+- 各代 Apple 芯片内存带宽差异大，以上均为 M5 Pro 实测，请勿直接套用，以自身硬件实测为准。
 
 ## GSQ-RCO 极致量化 A/B 实测（2026-09-15）
 
