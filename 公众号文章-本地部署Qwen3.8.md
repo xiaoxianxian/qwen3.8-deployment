@@ -140,14 +140,14 @@ ollama create qwen3.8-gsq-iq3s -f Modelfile.gsq # GSQ IQ3_S（换 FROM 即可）
 
 **如果网络慢或者 HuggingFace 访问不了，可以试试国内镜像：**
 
-**方案 A：设置环境变量，走 hf-mirror.com**
+**国内镜像 A：设置环境变量，走 hf-mirror.com**
 ```bash
 export OLLAMA_MODELS=/usr/local/var/lib/ollama/models
 export HF_ENDPOINT=https://hf-mirror.com
 ollama pull qwen3.8:27b-mlx
 ```
 
-**方案 B：直接用 ModelScope（魔搭社区）**
+**国内镜像 B：直接用 ModelScope（魔搭社区）**
 ```bash
 # 先用 python 从 ModelScope 下载（官方模型 ID）
 pip install modelscope
@@ -166,8 +166,6 @@ ollama create qwen3.8:27b-mlx -f ./Modelfile
 2. **首 token 延迟低**：3-4 秒即出字（GGUF 方案在内存紧张时会触发 swap，首 token 可能要等几分钟）
 
 > **想省显存怎么办？** 如果你同机还要跑 MiniMax H3 这类视频模型、显存吃紧，GSQ-RCO IQ3_S 是另一个好选择：体积只有 ~12GB、质量基本无损（12 题严格校验全对），只是生成速度约为 MLX 的一半（同条件 A/B 实测 12.6 vs 29.9 tok/s）。IQ3_XXS（~10GB）更省，但知识题有 ~1 分边际风险。
-
-> **补充（容易误读）**：MTP 投机解码是 Qwen3.8 模型自带能力，**GGUF 版与 MLX 版都需**在 Modelfile 写 `draft_num_predict 3` 才生效（输出无损），属于两个版本共有的提速项，**不是 MLX 独占优势**。MLX 的约 2 倍速度来自原生引擎本身，MTP 再叠加约 +85%（代码类）——两个杠杆叠加，才让 MLX 实测冲到 40 tok/s 上下。
 
 ---
 
@@ -258,7 +256,7 @@ Qwen3.8 本地跑起来后，就可以配合各种 Agent 工具使用了。
 | OpenCode | `opencode --model ollama/qwen3.8:27b-mlx` |
 | Codex | 经 cc-switch 网关中转，不能直接指向 Ollama |
 | Hermes Agent | 在会话中使用 `/model` 命令切换 |
-| Claude Code | 需加网关（cc-switch / claude-code-router / one-api）把 Anthropic 协议翻成 Ollama，再 `claude --model qwen3.8:27b-mlx` |
+| Claude Code | 走 Anthropic 协议，需经协议翻译网关（如 claude-code-router / one-api）转成 Ollama 的 OpenAI 兼容接口，再 `claude --model qwen3.8:27b-mlx` |
 
 ### 4.2 切回云端（以下以 Trae 为例）
 
@@ -455,6 +453,8 @@ sysctl vm.swapusage
 
 ## 七、实测性能数据
 
+下面用本机（M5 Pro / 48GB / Ollama 0.33.3）的实测数据说话。先看三档量化的速度基准，再看四模型严格 A/B 与首 token 延迟，最后回答「MLX 跑 128K 会不会爆显存」这个高频疑问。
+
 ### M5 Pro 48GB 性能基准（速度实测，2026-09-11 复核）
 
 > 速度数据是 2026-09-07 跑的，到现在还是最新的一组基准；稳定性是 09-10 复核的，见下。
@@ -468,6 +468,8 @@ sysctl vm.swapusage
 | 列表结构化 | 15.2 tok/s | **34.2 tok/s** | ~12.6 tok/s |
 
 > \* GSQ 列为同条件 12 题 A/B 实测（temperature=0），测法与上方 MLX/Q5 短基准不同，仅作量级参考；完整四模型对照见下文「四模型严格 A/B 实测」。
+
+> **关于「MLX 快约 2 倍」的澄清**：MTP 投机解码是 Qwen3.8 模型自带的加速能力，**GGUF 与 MLX 都需在 Modelfile 写 `draft_num_predict 3` 才生效（输出无损）**，属于两个版本共有的提速项，**不是 MLX 独占优势**。MLX 的约 2 倍速度主要来自原生引擎本身，MTP 再叠加约 +85%（代码类）——两个杠杆叠加，才让 MLX 实测冲到 40 tok/s 上下。
 
 ### 四模型严格 A/B 实测（2026-09-15）
 
@@ -540,3 +542,5 @@ MLX 跑 128K 上下文，到底会不会爆显存？我专门做了一次对照�
 - keep_alive 对 /v1 API 不生效，每次都要冷启动
 
 现在这套方案已经稳定运行，每天陪我写代码、分析文档、整理思路，效率提升明显。
+---
+
