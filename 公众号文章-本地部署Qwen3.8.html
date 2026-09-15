@@ -509,43 +509,31 @@ pkill -f "ollama serve" && sleep 2 && open -a Ollama</code></pre>
 
   <h2 data-page-node-id="PHyr69Uo3hJ38SAkVEnTYd">七、实测性能数据</h2>
 
-  <p data-page-node-id="bench-transition">下面用本机（M5 Pro / 48GB / Ollama 0.33.3）的实测数据说话。先看三档量化的速度基准，再看四模型严格 A/B 与首 token 延迟，最后回答「MLX 跑 128K 会不会爆显存」这个高频疑问。</p>
+  <p data-page-node-id="bench-transition">下面用本机（M5 Pro / 48GB / Ollama 0.33.3）的实测数据，先给一张四模型总表（含两种测法的速度），再讲首 token 延迟，最后回答「MLX 跑 128K 会不会爆显存」这个高频疑问。</p>
 
-  <h3 data-page-node-id="TSohahX1f24IBjpFhsAbdB">M5 Pro 48GB 性能基准（速度实测，2026-09-11 复核）</h3>
+  <h3   <h3 data-page-node-id="TSohahX1f24IBjpFhsAbdB">四模型速度、体积与质量总表</h3>
 
-  <p data-page-node-id="bench-note">速度数据是 2026-09-07 跑的，到现在还是最新的一组基准；稳定性是 09-10 复核的，见下。</p>
-
-  <p data-page-node-id="bench-chip-note">另外提醒一句：这些数字是 M5 Pro 的。MLX 快不快，很大程度看内存带宽，M1 到 M4 各代芯片的带宽都不一样，别拿 40 tok/s 直接对号入座，以自己机器实测为准。</p>
-  
-  <table data-page-node-id="FVDtM4UCoHNRo4JPyykCMP">
-    <tr data-page-node-id="B8g5cAMC5l677DLeBwV3L8"><th data-page-node-id="CCzeHWUMcWolAH2GGw6xc9">场景</th><th data-page-node-id="QAwbDLMytRgiw1v4z8xCbt">Q5_K_M + MTP (Metal)</th><th data-page-node-id="bxm4otFHUhQACXELfBUQrP">qwen3.8:27b-mlx (MLX 原生)</th><th data-page-node-id="0F8e3i9TG0ZGQaS5oJ99oN">GSQ IQ3_S + MTP*</th></tr>
-    <tr data-page-node-id="JRMBlNXD7DwgfBOEiDfzAx"><td data-page-node-id="BodGNdMMuIVlGJM4hR9ANr">代码生成</td><td data-page-node-id="2oNMkDYEMoGVIIV9KtqmHa">22.4 tok/s</td><td data-page-node-id="zVDr1R0RafSp9AaTLHccIA"><strong data-page-node-id="Weg5PYLRmVebDhOAP7K7XT">40.8 tok/s</strong></td><td data-page-node-id="KrZXBZrtGtl0bKGbVFFb0K">16.2 tok/s</td></tr>
-    <tr data-page-node-id="2vEwZENxgGZ2wqE8YL4Dt6"><td data-page-node-id="GqXQnW6HYwAOo3wikGgSAZ">开放式写作</td><td data-page-node-id="G4um6QWcixrSqQutJNC12k">13.9 tok/s</td><td data-page-node-id="GDrGakYg94ofkKMaeeLY1q"><strong data-page-node-id="pz6MFf2MsSwRR7CK628TM1">29.0 tok/s</strong></td><td data-page-node-id="50YipJnW1hNxmGmexvYQbU">~12.6 tok/s</td></tr>
-    <tr data-page-node-id="2EdtTCfcx4SbyB6xCoJdN4"><td data-page-node-id="bVxLJINDavh4NNAVUNJX1b">列表结构化</td><td data-page-node-id="ZGaFqtwghH8aifM326MhpN">15.2 tok/s</td><td data-page-node-id="XfdfPzapWzmpPxlMjXk8ag"><strong data-page-node-id="QU3dosAmM1vEQVCUcgt3cP">34.2 tok/s</strong></td><td data-page-node-id="MFKUnD8KB2wdSJDaKDhtyJ">~12.6 tok/s</td></tr>
-  </table>
-
-  <p data-page-node-id="gsqBenchNote">* GSQ 列为同条件 12 题 A/B 实测（temperature=0），测法与上方 MLX/Q5 短基准不同，仅作量级参考；完整四模型对照见下文「四模型严格 A/B 实测」。</p>
-
-  <p data-page-node-id="MTP-note-bench">关于「MLX 快约 2 倍」的澄清：MTP 投机解码是 Qwen3.8 模型自带的加速能力，<b>GGUF 与 MLX 都需在 Modelfile 写 draft_num_predict 3 才生效（输出无损）</b>，属于两个版本共有的提速项，<b>不是 MLX 独占优势</b>。MLX 的约 2 倍速度主要来自原生引擎本身，MTP 再叠加约 +85%（代码类）——两个杠杆叠加，才让 MLX 实测冲到 40 tok/s 上下。</p>
-
-  <h3 data-page-node-id="ab4-title">四模型严格 A/B 实测（2026-09-15）</h3>
-
-  <p data-page-node-id="ab4-intro">ISTA-DASLab 的 <b>GSQ-RCO</b> 把 Qwen3.8-27B 压到 IQ3_S（≈12GB）/ IQ3_XXS（≈10GB）且基本无损。我们在本机（M5 Pro / 48GB / Ollama 0.33.3）跑了 <b>4 模型严格对照</b>：temperature=0、统一 12 道题（代码 / 数学 / 知识 GPQA / 长上下文 / 严格 JSON / 中文写作）、num_ctx=131072、KV 缓存 q8_0、四模型均开 MTP（draft_num_predict 3）、串行跑完即卸载避免显存叠加。（命名对应：GitHub 仓库里 MLX 版记作 <b>MLX nvfp4</b> / <b>MLX 原生版</b>，模型标签 <code data-page-node-id="ab4-mlx-tag">qwen3.8:27b-mlx</code>；GSQ 指 GSQ-RCO 量化。）</p>
+  <p data-page-node-id="bench-note">表中 GSQ 两档来自 ISTA-DASLab 的 <b>GSQ-RCO</b> 学习式混合精度量化，把 27B 压到 12 GB / 10 GB 且基本无损；四模型均开 MTP（draft_num_predict 3），串行跑完即卸载避免显存叠加。</p>
 
   <table data-page-node-id="ab4-table">
-    <tr data-page-node-id="ab4-th"><th data-page-node-id="ab4-th1">模型</th><th data-page-node-id="ab4-th2">量化</th><th data-page-node-id="ab4-th3">体积</th><th data-page-node-id="ab4-th4">平均 decode（12 题）</th><th data-page-node-id="ab4-th5">质量（12 题严格校验）</th></tr>
-    <tr data-page-node-id="ab4-r1"><td data-page-node-id="ab4-r1c1"><b>MLX nvfp4</b>（MLX 原生版）</td><td data-page-node-id="ab4-r1c2">NVFP4 均匀 4.0bpw</td><td data-page-node-id="ab4-r1c3">18 GB</td><td data-page-node-id="ab4-r1c4"><strong data-page-node-id="ab4-r1c4b">29.9 tok/s</strong></td><td data-page-node-id="ab4-r1c5">12/12 全对</td></tr>
-    <tr data-page-node-id="ab4-r2"><td data-page-node-id="ab4-r2c1">Q5_K_M</td><td data-page-node-id="ab4-r2c2">GGUF 5.6bpw 均匀</td><td data-page-node-id="ab4-r2c3">20 GB</td><td data-page-node-id="ab4-r2c4">14.9 tok/s</td><td data-page-node-id="ab4-r2c5">12/12 全对</td></tr>
-    <tr data-page-node-id="ab4-r3"><td data-page-node-id="ab4-r3c1">GSQ IQ3_S</td><td data-page-node-id="ab4-r3c2">3.5bpw 混合</td><td data-page-node-id="ab4-r3c3">12 GB</td><td data-page-node-id="ab4-r3c4">12.6 tok/s</td><td data-page-node-id="ab4-r3c5">12/12 全对</td></tr>
-    <tr data-page-node-id="ab4-r4"><td data-page-node-id="ab4-r4c1">GSQ IQ3_XXS</td><td data-page-node-id="ab4-r4c2">3.0bpw 混合</td><td data-page-node-id="ab4-r4c3">10 GB</td><td data-page-node-id="ab4-r4c4">12.5 tok/s</td><td data-page-node-id="ab4-r4c5">12/12 全对</td></tr>
+    <tr data-page-node-id="ab4-th"><th data-page-node-id="ab4-th1">模型</th><th data-page-node-id="ab4-th2">量化档位</th><th data-page-node-id="ab4-th3">体积</th><th data-page-node-id="ab4-th4">短上下文基准 (tok/s)¹</th><th data-page-node-id="ab4-th6">12 题严格 A/B 平均 decode (tok/s)</th><th data-page-node-id="ab4-th7">12 题质量</th></tr>
+    <tr data-page-node-id="ab4-r1"><td data-page-node-id="ab4-r1c1"><b>MLX nvfp4</b>（MLX 原生版）</td><td data-page-node-id="ab4-r1c2">NVFP4 4.0bpw</td><td data-page-node-id="ab4-r1c3">18 GB</td><td data-page-node-id="ab4-r1c6">代码 40.8 / 写作 29.0 / 结构化 34.2</td><td data-page-node-id="ab4-r1c4"><strong data-page-node-id="ab4-r1c4b">29.9</strong></td><td data-page-node-id="ab4-r1c5">全对</td></tr>
+    <tr data-page-node-id="ab4-r2"><td data-page-node-id="ab4-r2c1">Q5_K_M</td><td data-page-node-id="ab4-r2c2">GGUF 5.6bpw</td><td data-page-node-id="ab4-r2c3">20 GB</td><td data-page-node-id="ab4-r2c6">代码 22.4 / 写作 13.9 / 结构化 15.2</td><td data-page-node-id="ab4-r2c4">14.9</td><td data-page-node-id="ab4-r2c5">全对</td></tr>
+    <tr data-page-node-id="ab4-r3"><td data-page-node-id="ab4-r3c1">GSQ IQ3_S</td><td data-page-node-id="ab4-r3c2">3.5bpw 混合</td><td data-page-node-id="ab4-r3c3">12 GB</td><td data-page-node-id="ab4-r3c6">代码 16.2 / 写作 ~12.6 / 结构化 ~12.6</td><td data-page-node-id="ab4-r3c4">12.6</td><td data-page-node-id="ab4-r3c5">全对</td></tr>
+    <tr data-page-node-id="ab4-r4"><td data-page-node-id="ab4-r4c1">GSQ IQ3_XXS</td><td data-page-node-id="ab4-r4c2">3.0bpw 混合</td><td data-page-node-id="ab4-r4c3">10 GB</td><td data-page-node-id="ab4-r4c6">—</td><td data-page-node-id="ab4-r4c4">12.5</td><td data-page-node-id="ab4-r4c5">全对</td></tr>
   </table>
 
-  <p data-page-node-id="ab4-note">上方「M5 Pro 48GB 性能基准」里的 40.8 / 22.4 是早期短上下文不同测法的基准；本表为 temperature=0、12 题统一对照，更可控。两表都来自本机实测。</p>
+  <p data-page-node-id="gsqBenchNote">¹ 短上下文基准为 2026-09-07 单场景实测（代码生成 / 开放式写作 / 列表结构化）；12 题严格 A/B 为 2026-09-15 同条件对照（temperature=0，统一 12 题）。两列测法不同，倍数不可直接相除比较。GSQ IQ3_XXS 未做短上下文分项基准，以「—」表示。</p>
+
+  <p data-page-node-id="bench-chip-note">以上速度为 M5 Pro 实测；MLX 速度受内存带宽影响大，M1–M4 各代芯片会明显不同，请以本机实测为准。</p>
+
+  <p data-page-node-id="MTP-note-bench">关于「MLX 快约 2 倍」的澄清：MTP 投机解码是 Qwen3.8 模型自带的加速能力，<b>GGUF 与 MLX 都需在 Modelfile 写 draft_num_predict 3 才生效（输出无损）</b>，是两个版本共有的提速项，<b>不是 MLX 独占优势</b>。MLX 的约 2 倍速度主要来自原生引擎本身，MTP 再叠加约 +85%（代码类）——两个杠杆叠加，实测才冲到 40 tok/s 上下。</p>
+
 
   <p data-page-node-id="ab4-concl">三个维度的结论（本机 M5 Pro / 48GB / Ollama 0.33.3 实测）：</p>
-  <p data-page-node-id="ab4-c1">• <b>更省内存 ✅</b>：IQ3_S 比 MLX 4-bit 省 6GB，IQ3_XXS 省 8GB——直接给 131K 上下文或同机跑的 MiniMax H3 视频模型腾地方。</p>
-  <p data-page-node-id="ab4-c2">• <b>更快 ❌</b>：MLX 4-bit 平均 decode 29.9 tok/s，约为 GSQ 混合精度（12~13 tok/s）的 <b>2.4 倍</b>。NVFP4 是 GPU 友好的均匀 4-bit，IQ/GSQ 混合精度每个权重解量化开销大，在 Apple Silicon 的 Metal 后端（memory-bound）反而更慢。</p>
-  <p data-page-node-id="ab4-c3">• <b>质量无损（vs MLX）✅</b>：12 题四档全对（JSON 严格可解析、数学最终答案一致、知识题选项一致）。DASLab 在 198 题 GPQA 上测得 IQ3_XXS 相对 BF16 差 ~1 分，需大题集才复现。</p>
+  <p data-page-node-id="ab4-c1">• <b>更省内存</b>：IQ3_S 比 MLX 4-bit 省 6GB，IQ3_XXS 省 8GB——直接给 131K 上下文或同机跑的 MiniMax H3 视频模型腾地方。</p>
+  <p data-page-node-id="ab4-c2">• <b>更快</b>：MLX 4-bit 平均 decode 29.9 tok/s，约为 GSQ 混合精度（12~13 tok/s）的 <b>2.4 倍</b>。NVFP4 是 GPU 友好的均匀 4-bit，IQ/GSQ 混合精度每个权重解量化开销大，在 Apple Silicon 的 Metal 后端（memory-bound）反而更慢。</p>
+  <p data-page-node-id="ab4-c3">• <b>质量无损（vs MLX）</b>：12 题四档全对（JSON 严格可解析、数学最终答案一致、知识题选项一致）。DASLab 在 198 题 GPQA 上测得 IQ3_XXS 相对 BF16 差 ~1 分，需大题集才复现。</p>
 
   <p data-page-node-id="ab4-advice"><b>选型建议（48GB Mac，主用 agentic coding + 长推理）：</b></p>
   <p data-page-node-id="ab4-a1">• 速度优先 → 保持 <b>MLX nvfp4</b>（现状）</p>
@@ -601,3 +589,4 @@ pkill -f "ollama serve" && sleep 2 && open -a Ollama</code></pre>
   <p data-page-node-id="yHkOE2yXoh1t9Co6IMgivc">现在这套方案已经稳定运行，每天陪我写代码、分析文档、整理思路，效率提升明显。</p>
 </div>
 </body>
+</html>
