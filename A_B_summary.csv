@@ -1,0 +1,49 @@
+model,id,category,decode_tps,prefill_tps,gen_tokens,wall_s
+qwen3.8:27b-mlx,A1,Agentic Coding,39.45,140.73,1908,48.99
+qwen3.8-gsq-iq3s-mtp,A1,Agentic Coding,16.19,142.4,1512,97.51
+qwen3.8-gsq-iq3xxs-mtp,A1,Agentic Coding,13.93,144.6,1257,93.96
+qwen3.8:27b-mlx,A2,Agentic Coding,37.69,282.62,1159,33.27
+qwen3.8:27b-mlx,A3,Agentic Coding,36.68,271.63,1050,28.88
+qwen3.8:27b-mlx,A4,Agentic Coding,30.96,307.79,1430,46.61
+qwen3.8:27b-mlx,B1,Math Reasoning,34.76,252.24,1625,47.0
+qwen3.8:27b-mlx,B2,Math Reasoning,31.92,265.86,1244,39.23
+qwen3.8:27b-mlx,C1,Knowledge (GPQA),24.53,204.42,796,32.87
+qwen3.8:27b-mlx,D1,Long-context,26.22,269.55,722,29.01
+qwen3.8:27b-mlx,E1,Structured Output,23.32,189.59,526,23.0
+qwen3.8:27b-mlx,E2,Structured Output,25.05,171.34,525,21.39
+qwen3.8:27b-mlx,F1,Chinese Writing,21.99,176.2,934,42.93
+qwen3.8:27b-mlx,F2,Chinese Writing,26.26,156.93,1054,40.6
+qwen3.8-gsq-iq3s-mtp,A2,Agentic Coding,13.55,182.54,1587,121.42
+qwen3.8-gsq-iq3s-mtp,A3,Agentic Coding,11.92,99.12,1055,89.18
+qwen3.8-gsq-iq3s-mtp,A4,Agentic Coding,11.25,182.3,1616,144.44
+qwen3.8-gsq-iq3s-mtp,B1,Math Reasoning,14.04,89.17,989,71.11
+qwen3.8-gsq-iq3s-mtp,B2,Math Reasoning,12.99,110.5,1053,81.71
+qwen3.8-gsq-iq3s-mtp,C1,Knowledge (GPQA),12.51,123.06,787,63.61
+qwen3.8-gsq-iq3s-mtp,D1,Long-context,12.84,192.1,564,46.02
+qwen3.8-gsq-iq3s-mtp,E1,Structured Output,11.63,130.04,385,33.77
+qwen3.8-gsq-iq3s-mtp,E2,Structured Output,11.86,115.2,455,39.03
+qwen3.8-gsq-iq3s-mtp,F1,Chinese Writing,10.13,128.77,1055,104.81
+qwen3.8-gsq-iq3s-mtp,F2,Chinese Writing,12.82,110.69,676,53.4
+qwen3.8-gsq-iq3xxs-mtp,A2,Agentic Coding,13.5,184.67,1724,132.0
+qwen3.8-gsq-iq3xxs-mtp,A3,Agentic Coding,10.68,106.62,1205,113.41
+qwen3.8-gsq-iq3xxs-mtp,A4,Agentic Coding,11.25,175.42,1208,108.16
+qwen3.8-gsq-iq3xxs-mtp,B1,Math Reasoning,13.99,92.0,1273,91.67
+qwen3.8-gsq-iq3xxs-mtp,B2,Math Reasoning,13.26,110.33,856,65.22
+qwen3.8-gsq-iq3xxs-mtp,C1,Knowledge (GPQA),12.84,139.39,615,48.56
+qwen3.8-gsq-iq3xxs-mtp,D1,Long-context,13.36,184.48,497,39.38
+qwen3.8-gsq-iq3xxs-mtp,E1,Structured Output,11.92,134.83,362,31.02
+qwen3.8-gsq-iq3xxs-mtp,E2,Structured Output,12.2,117.91,454,37.86
+qwen3.8-gsq-iq3xxs-mtp,F1,Chinese Writing,10.59,130.9,984,93.58
+qwen3.8-gsq-iq3xxs-mtp,F2,Chinese Writing,13.14,113.06,540,41.75
+qwen3.8-q5:latest,A1,Agentic Coding,17.74,136.91,1625,97.29
+qwen3.8-q5:latest,A2,Agentic Coding,16.14,173.62,3123,194.21
+qwen3.8-q5:latest,A3,Agentic Coding,14.28,99.12,1260,88.95
+qwen3.8-q5:latest,A4,Agentic Coding,13.48,174.97,1645,122.79
+qwen3.8-q5:latest,B1,Math Reasoning,16.52,90.62,1660,101.14
+qwen3.8-q5:latest,B2,Math Reasoning,15.69,102.76,936,60.35
+qwen3.8-q5:latest,C1,Knowledge (GPQA),13.69,130.94,715,52.95
+qwen3.8-q5:latest,D1,Long-context,15.83,181.73,496,33.54
+qwen3.8-q5:latest,E1,Structured Output,13.57,120.29,412,31.09
+qwen3.8-q5:latest,E2,Structured Output,14.64,104.97,409,28.65
+qwen3.8-q5:latest,F1,Chinese Writing,12.2,121.04,1094,90.47
+qwen3.8-q5:latest,F2,Chinese Writing,15.55,110.35,717,47.03
