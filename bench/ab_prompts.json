@@ -1,0 +1,106 @@
+[
+  {
+    "id": "A1",
+    "category": "Agentic Coding",
+    "task": "实现 + 单元测试",
+    "prompt": "请用 Python 实现一个线程安全的 LRUCache 类，支持 get(key)、put(key, value)，要求 get/put 平均 O(1)，容量由构造参数指定。同时用 pytest 写不少于 3 个测试用例，覆盖：基本读写、容量淘汰、并发安全。只输出代码与测试，不要额外解释。",
+    "scoring": "代码可运行；pytest 能通过；O(1) 用 dict+双向链表或 OrderedDict；有淘汰逻辑；有锁保护并发。",
+    "stresses": "代码正确性、数据结构功底、工程素养（测试/并发）"
+  },
+  {
+    "id": "A2",
+    "category": "Agentic Coding",
+    "task": "Debug",
+    "prompt": "下面这个函数本应返回列表中出现次数超过一半的元素（多数元素），但存在 bug。请找出 bug、修复并解释原因。\n```python\ndef majority(nums):\n    count = 0\n    candidate = None\n    for n in nums:\n        if count == 0:\n            candidate = n\n            count = 1\n        elif n == candidate:\n            count -= 1\n        else:\n            count += 1\n    return candidate\n```",
+    "scoring": "识别 Buger-Moore 计数方向反了（n==candidate 应 count+=1，否则 count-=1）；给出正确代码；解释算法原理。",
+    "stresses": "调试能力、算法正确性"
+  },
+  {
+    "id": "A3",
+    "category": "Agentic Coding",
+    "task": "SQL 推理（排序陷阱）",
+    "prompt": "有员工表 employees(id, name, dept, salary)。请写出 SQL：对每个部门，按薪资从高到低排名，取每个部门薪资前 3 名的员工，结果包含部门、姓名、薪资、排名。注意排名需用降序。",
+    "scoring": "使用窗口函数 ROW_NUMBER()/RANK() OVER (PARTITION BY dept ORDER BY salary DESC)；正确的 DESC；过滤 rank<=3。典型错误：用 ASC，或用无分区的 LIMIT 3。",
+    "stresses": "SQL 正确性、对排序方向的细心"
+  },
+  {
+    "id": "A4",
+    "category": "Agentic Coding",
+    "task": "重构 / 设计",
+    "prompt": "下面这个函数做了太多事：读文件、解析、过滤、写库。请将其拆成 3 个单一职责的函数（read_raw / parse_and_filter / persist），定义清晰接口，并说明这样拆分的好处。\n```python\ndef process(path, db):\n    with open(path) as f:\n        lines = f.readlines()\n    out = [l.strip() for l in lines if 'ERROR' in l and len(l) > 10]\n    for row in out:\n        db.insert(row)\n```",
+    "scoring": "拆分合理（职责单一）；接口清晰（输入输出明确）；能说明可测试性/可维护性收益。",
+    "stresses": "软件设计判断力"
+  },
+  {
+    "id": "B1",
+    "category": "Math Reasoning",
+    "task": "数论（中国剩余定理）",
+    "prompt": "一个正整数 n 满足：n 除以 3 余 2，除以 5 余 3，除以 7 余 2。求满足条件的最小正整数 n，并给出完整推理过程。",
+    "scoring": "n=23；推理过程正确（CRT 或枚举验证）。",
+    "stresses": "多步精确数学推理（IQ3_S 宣称在此类任务上无损）"
+  },
+  {
+    "id": "B2",
+    "category": "Math Reasoning",
+    "task": "应用题建模",
+    "prompt": "甲乙两人从相距 60 公里的两地同时出发相向而行，甲速度 4 km/h，乙速度 6 km/h。甲出发 1 小时后乙才出发。问乙出发后多久两人相遇？请给出方程与解。",
+    "scoring": "甲先走 4km 剩 56km；相对速度 10km/h；乙出发后 5.6 小时相遇。方程与解均正确。",
+    "stresses": "物理建模 + 代数求解"
+  },
+  {
+    "id": "C1",
+    "category": "Knowledge (GPQA)",
+    "task": "研究生级概念辨析",
+    "prompt": "关于量子力学中的泡利不相容原理，下列说法正确的是哪个？请选择并简要解释。\nA. 两个全同玻色子不能占据同一量子态\nB. 两个全同费米子不能占据同一量子态（所有量子数相同）\nC. 该原理只适用于电子\nD. 该原理决定了原子核的稳定性",
+    "scoring": "选 B 正确；能解释费米子/自旋-1/2/泡利原理。这是 IQ3_S 相对 BF16 差距最大（0.51 分）的维度，重点观察。",
+    "stresses": "事实性知识准确性（低 bit 易掉分处）"
+  },
+  {
+    "id": "D1",
+    "category": "Long-context",
+    "task": "长文档抽取与一致性",
+    "prompt": "【项目周报 SPEC】\n星桥科技 2026 Q3 内部项目「灯塔」进度周报（第 11 周）：\n1. 项目目标：为中小银行搭建合规风控中台，分三期。一期交付规则引擎，二期交付模型平台，三期交付监管报送。\n2. 本周进展：一期规则引擎已完成 92%，剩余 3 个反洗钱（AML）规则待联调；二期模型平台完成技术选型，确定使用 Qwen3.8-27B 本地化部署做文档抽取，预计下周启动 PoC。\n3. 风险：二期依赖一期 AML 规则联调完成（阻塞点）；客户侧数据脱敏环境未就绪，影响 PoC 启动；合规团队人力被另一个项目「磐石」占用 40%。\n4. 关键数字：本期预算 480 万，已用 311 万；本期人力 18 人，本期实际在岗 15 人（3 人借调「磐石」）；里程碑 M2（一期上线）定在 2026-09-30，当前置信度 70%。\n5. 决策：本周已批准追加 2 名外包测试，费用计入二期预算；M2 之前不再新增需求（冻结范围）。\n6. 下周三（2026-09-23）向客户 CTO 做一期演示，演示环境需提前 2 天（09-21）锁定。\n\n请回答：(a) 二期模型平台 PoC 的阻塞点是什么？(b) 本期预算剩余多少万元？(c) 演示环境最晚应在哪一天锁定？",
+    "scoring": "(a) 客户侧数据脱敏环境未就绪（不是一期 AML，AML 阻塞的是二期启动前的联调，但 PoC 直接阻塞是脱敏环境）；(b) 480-311=169 万；(c) 2026-09-21。答案需准确引用原文数字。",
+    "stresses": "长上下文信息抽取、跨句一致性、数字准确性"
+  },
+  {
+    "id": "E1",
+    "category": "Structured Output",
+    "task": "严格 JSON 输出",
+    "prompt": "请将以下需求解析为严格的 JSON（只输出 JSON，不要任何其他文字）：需求='用户反馈登录页在 Safari 上点击登录按钮无响应，优先级高，需要复现步骤和修复方案'。格式：{\"title\":str,\"priority\":\"high\"|\"medium\"|\"low\",\"steps\":[str],\"fix\":str}。",
+    "scoring": "合法可解析 JSON；字段齐全；priority 为 high；steps 非空；fix 合理。",
+    "stresses": "格式严格遵守、结构化抽取"
+  },
+  {
+    "id": "E2",
+    "category": "Structured Output",
+    "task": "工具调用决策",
+    "prompt": "用户说：'帮我查一下北京明天天气，如果下雨就提醒我带伞。' 可用工具：get_weather(city, date)、send_reminder(text)。请输出应调用的工具及参数，严格 JSON 数组：[{\"tool\":str,\"args\":{}}]。",
+    "scoring": "至少调用 get_weather(北京, 明天)；可说明提醒依赖天气结果（合理输出 get_weather 即可）。JSON 合法。",
+    "stresses": "工具选择、参数构造、条件逻辑"
+  },
+  {
+    "id": "F1",
+    "category": "Chinese Writing",
+    "task": "技术短文（结构化）",
+    "prompt": "请写一篇约 600 字的中文技术短文，主题：'为什么本地大模型量化对中小团队有真实价值'。结构：引言、技术原理（用通俗语言解释量化）、成本账（以 48GB 内存 Mac 跑 27B 模型为例）、风险与边界、结语。",
+    "scoring": "五段结构完整；量化解释准确且通俗；成本数字合理（如 4-bit 把 50GB+ 压到 ~18GB）；明确指出量化有损边界（过低 bit 掉智力）。",
+    "stresses": "中文技术写作、概念准确性、结构"
+  },
+  {
+    "id": "F2",
+    "category": "Chinese Writing",
+    "task": "技术翻译",
+    "prompt": "请将以下英文准确翻译为中文，保留技术术语：'Quantization reduces the numerical precision of model weights, trading a small amount of accuracy for a large reduction in memory footprint and inference cost. Mixed-precision schemes allocate bits per tensor by sensitivity, preserving task quality at lower average bit-width.'",
+    "scoring": "准确；术语正确（量化 / 数值精度 / 混合精度 / 张量 / 位宽 / 内存占用 / 推理成本）；通顺。",
+    "stresses": "术语准确性、双语能力"
+  },
+  {
+    "id": "G1",
+    "category": "Vision (optional)",
+    "task": "图像理解（需 mmproj / llama.cpp）",
+    "prompt": "[图片] 请描述这张图片的主要内容，并指出图中是否存在明显的 UI / 排版问题。",
+    "scoring": "需 mmproj 或 llama.cpp 视觉路径；描述准确、问题识别合理。本项仅在视觉链路就绪后执行。",
+    "stresses": "多模态理解（当前 GGUF 文本权重 + 分离 mmproj，Ollama 直跑不支持，需单独接线）"
+  }
+]
