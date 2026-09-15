@@ -111,24 +111,59 @@ ollama pull qwen3.8:27b-mlx
 
 ### 第五步：创建本地模型
 
-```bash
-# 创建自定义模型配置
-cat > Modelfile << 'EOF'
+MLX 原生版 `ollama pull` 后即为可用模型；GGUF（Q5 / GSQ IQ3）路线需显式写 Modelfile，挂上**多模态模板**与 **MTP 投机解码**——否则发图报错、且浪费模型自带的加速。
+
+**MLX 原生版（FROM 官方标签）：**
+
+```dockerfile
 FROM qwen3.8:27b-mlx
-
-# 上下文窗口设置
 PARAMETER num_ctx 131072
-
-# MTP 投机解码（Qwen3.8 自带加速）
-PARAMETER draft_num_predict 3
-
-# 采样参数
+PARAMETER draft_num_predict 3     # MTP 投机解码（Qwen3.8 自带加速）
 PARAMETER temperature 0.7
 PARAMETER top_p 0.95
 PARAMETER top_k 20
-EOF
+```
 
-ollama create qwen3.8:27b-mlx -f Modelfile
+**GGUF Q5_K_M（FROM Ollama 标签，需补多模态模板 + MTP + 视觉投影）：**
+
+```dockerfile
+FROM unsloth/Qwen3.8-27B-GGUF:Qwen3.8-27B-UD-Q5_K_M
+FROM ./mmproj-F16.gguf            # 视觉投影（多模态必需，需单独下载）
+TEMPLATE """{{- if .System }}<|system|>
+{{ .System }}
+<|end|>
+{{ end }}
+{{- range .Messages }}
+{{- if eq .Role "user" }}<|user|>
+{{ .Content }}
+<|end|>
+{{ else if eq .Role "assistant" }}<|assistant|>
+{{ if .Content }}{{ .Content }}{{ end }}{{ if .ReasoningContent }}<|reserved_special_token_145|>{{ .ReasoningContent }}<|end|>
+{{ end }}
+<|end|>
+{{ end }}
+{{- end }}
+<|assistant|>
+{{ if .ReasoningContent }}<|reserved_special_token_145|>{{ .ReasoningContent }}<|end|>
+{{ end }}{{ .Response }}"""
+PARAMETER num_ctx 131072
+PARAMETER draft_num_predict 3
+```
+
+**GSQ-RCO IQ3_S / IQ3_XXS（FROM 本地 GGUF，结构同上，仅换 FROM 与 mmproj）：**
+
+```dockerfile
+FROM ./Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf   # 换成 IQ3_XXS 用同名 -IQ3_XXS- 文件
+FROM ./mmproj-Qwen3.8-27B-BF16.gguf
+TEMPLATE """（与上方 GGUF Q5 完全一致的多模态模板）"""
+PARAMETER num_ctx 131072
+PARAMETER draft_num_predict 3
+```
+
+```bash
+# GGUF / GSQ 路线创建模型
+ollama create qwen3.8-q5 -f Modelfile.q5
+ollama create qwen3.8-gsq-iq3s -f Modelfile.gsq
 ```
 
 ### 第六步：配置全局环境变量
@@ -153,6 +188,8 @@ pkill -f "ollama serve" && sleep 2 && open -a Ollama
 
 ### 第八步：使用模型
 
+> 下面以 MLX 原生版为例；若你选了 GGUF Q5 或 GSQ IQ3，把模型名换成 `qwen3.8-q5` / `qwen3.8-gsq-iq3s` 即可。
+
 ```bash
 # 测试对话
 ollama run qwen3.8:27b-mlx "你好，请用一句话介绍你自己"
@@ -160,7 +197,7 @@ ollama run qwen3.8:27b-mlx "你好，请用一句话介绍你自己"
 # 测试代码生成
 ollama run qwen3.8:27b-mlx "写一个 Python 快速排序算法"
 
-# 测试图片理解（需添加视觉模型）
+# 测试图片理解（MLX 自带视觉；GGUF/GSQ 需 Modelfile 已挂 mmproj）
 ollama run qwen3.8:27b-mlx "描述这张图片的内容" --images image.jpg
 ```
 
@@ -177,7 +214,7 @@ client = OpenAI(
 )
 
 response = client.chat.completions.create(
-    model="qwen3.8:27b-mlx",
+    model="qwen3.8:27b-mlx",  # 换成 qwen3.8-q5 / qwen3.8-gsq-iq3s 等你创建的模型名
     messages=[{"role": "user", "content": "你好"}],
     temperature=0.7,
     max_tokens=2000
@@ -198,6 +235,8 @@ print(response.choices[0].message.content)
 | MTP 接受率 | 约 0.6–0.85（runner 日志实测）|
 
 > 以上均为 M5 Pro 实测。M1–M4 各代芯片内存带宽差异大，请勿直接套用，以自身硬件实测为准。
+>
+> 以上为 MLX 原生版单模型基准（短上下文不同测法，详见第七节「四模型严格 A/B 实测」）。GGUF Q5_K_M（~14.9 tok/s）、GSQ IQ3_S（~12.6 tok/s）的对照与质量校验见同节 A/B 表。
 
 ## 🧪 GSQ-RCO 极致量化 A/B 实测（2026-09-15）
 
