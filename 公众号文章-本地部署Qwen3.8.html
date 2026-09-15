@@ -257,12 +257,12 @@ ollama create qwen3.8-gsq-iq3s -f Modelfile.gsq # GSQ IQ3_S（换 FROM 即可）
 
   <p data-page-node-id="jLbtWTcpAn2LBWxVqeJSeN"><strong data-page-node-id="yN1AMq7ZAcsJK0bCmcjy3Q">如果网络慢或者 HuggingFace 访问不了，可以试试国内镜像：</strong></p>
   
-  <p data-page-node-id="BOtyiMUGszE9gTnZ4A0xrs"><strong data-page-node-id="G2U7YLKNeCNyowEJZ7xdw6">方案 A：设置环境变量，走 hf-mirror.com</strong></p>
+  <p data-page-node-id="BOtyiMUGszE9gTnZ4A0xrs"><strong data-page-node-id="G2U7YLKNeCNyowEJZ7xdw6">国内镜像 A：设置环境变量，走 hf-mirror.com</strong></p>
   <pre data-page-node-id="Ei5XXYKPE5F367Fmzs7FDY"><code data-page-node-id="th9PwjnFTiTCwzw1e1gRUd">export OLLAMA_MODELS=/usr/local/var/lib/ollama/models
 export HF_ENDPOINT=https://hf-mirror.com
 ollama pull qwen3.8:27b-mlx</code></pre>
   
-  <p data-page-node-id="wtJhH54R3gmAcSHAWLkThy"><strong data-page-node-id="5ICFTxuLprYdFVstPuvbSS">方案 B：直接用 ModelScope（魔搭社区）</strong></p>
+  <p data-page-node-id="wtJhH54R3gmAcSHAWLkThy"><strong data-page-node-id="5ICFTxuLprYdFVstPuvbSS">国内镜像 B：直接用 ModelScope（魔搭社区）</strong></p>
   <pre data-page-node-id="ObS8AObsTtGNBBSCUMXzTs"><code data-page-node-id="z7PJctE4f4uFxeMuqffywK"># 先用 python 从 ModelScope 下载（官方模型 ID）
 pip install modelscope
 python -c "from modelscope import snapshot_download; snapshot_download('Qwen/Qwen3.8-27B', cache_dir='./models')"
@@ -279,8 +279,6 @@ ollama create qwen3.8:27b-mlx -f ./Modelfile</code></pre>
   2. <strong data-page-node-id="hGhheZ52ZAd07RSB6aeQZP">首 token 延迟低</strong>：3-4 秒即出字（GGUF 方案在内存紧张时会触发 swap，首 token 可能要等几分钟）</p>
 
   <p data-page-node-id="gsqMlxNote"><b>想省显存怎么办？</b> 如果你同机还要跑 MiniMax H3 这类视频模型、显存吃紧，GSQ-RCO IQ3_S 是另一个好选择：体积只有 ~12GB、质量基本无损（12 题严格校验全对），只是生成速度约为 MLX 的一半（同条件 A/B 实测 12.6 vs 29.9 tok/s）。IQ3_XXS（~10GB）更省，但知识题有 ~1 分边际风险。</p>
-
-  <p data-page-node-id="MTP-note-md">补充（容易误读）：MTP 投机解码是 Qwen3.8 模型自带能力，GGUF 版与 MLX 版都需在 Modelfile 写 draft_num_predict 3 才生效（输出无损），属于两个版本共有的提速项，不是 MLX 独占优势。MLX 的约 2 倍速度来自原生引擎本身，MTP 再叠加约 +85%（代码类）——两个杠杆叠加，才让 MLX 实测冲到 40 tok/s 上下。</p>
 
   <h3 data-page-node-id="1902WbKgr4GyDD6pSkruO6">第三步：配置全局环境变量</h3>
   
@@ -363,7 +361,7 @@ print(json.loads(r.read())['choices'][0]['message']['content'])
     <tr data-page-node-id="QA2jjlV1PKtQs8rmMedfmx"><td data-page-node-id="iLu0P5gDq4JYfaBs4YRDGv">OpenCode</td><td data-page-node-id="cZ3TMCQXxRXwfmXLcrCUbJ"><code data-page-node-id="GMxeVmIXKSwTAKOvNCB3dU">opencode --model ollama/qwen3.8:27b-mlx</code></td></tr>
     <tr data-page-node-id="J2YeqB7QFAFhmxISg4Eb0k"><td data-page-node-id="0EPu9GBvxQzXMD3aBtex3X">Codex</td><td data-page-node-id="8vsE6nK8EDGIjhbnZukLxE">经 cc-switch 网关中转，不能直接指向 Ollama</td></tr>
     <tr data-page-node-id="8fCWwJCxsZGDOUlblRZLVq"><td data-page-node-id="8mLHNLlRRp7xQnkHar7kKw">Hermes Agent</td><td data-page-node-id="N0Yxa6W7Ae3BEMY4WQ5rC0">在会话中使用 <code data-page-node-id="yHHcXBH02NAneGD3g4Fh09">/model</code> 命令切换</td></tr>
-    <tr data-page-node-id="ClaudeRow"><td data-page-node-id="ClaudeCell1">Claude Code</td><td data-page-node-id="ClaudeCell2">需加网关（cc-switch / claude-code-router / one-api）把 Anthropic 协议翻成 Ollama，再 <code data-page-node-id="ClaudeCell3">claude --model qwen3.8:27b-mlx</code></td></tr>
+    <tr data-page-node-id="ClaudeRow"><td data-page-node-id="ClaudeCell1">Claude Code</td><td data-page-node-id="ClaudeCell2">走 Anthropic 协议，需经协议翻译网关（如 claude-code-router / one-api）转成 Ollama 的 OpenAI 兼容接口，再 <code data-page-node-id="ClaudeCell3">claude --model qwen3.8:27b-mlx</code></td></tr>
   </table>
 
   <h3 data-page-node-id="OoERQWfoSobxrLJgWJeFSW">4.2 切回云端（以下以 Trae 为例）</h3>
@@ -510,7 +508,9 @@ pkill -f "ollama serve" && sleep 2 && open -a Ollama</code></pre>
   <p data-page-node-id="FEvnsFAminxwB65VKIQ6PW"><strong data-page-node-id="w3xFFxEF7gxA9HdNDJEqtB">解决</strong>：调用时传 <code data-page-node-id="XXlsrJZ4kfuwVAK0UnlTH4">max_tokens: 2000</code> 或更大，或传 <code data-page-node-id="DQoLt6tiy2KruSvojPsH8E">think: false</code> 关闭思考。</p>
 
   <h2 data-page-node-id="PHyr69Uo3hJ38SAkVEnTYd">七、实测性能数据</h2>
-  
+
+  <p data-page-node-id="bench-transition">下面用本机（M5 Pro / 48GB / Ollama 0.33.3）的实测数据说话。先看三档量化的速度基准，再看四模型严格 A/B 与首 token 延迟，最后回答「MLX 跑 128K 会不会爆显存」这个高频疑问。</p>
+
   <h3 data-page-node-id="TSohahX1f24IBjpFhsAbdB">M5 Pro 48GB 性能基准（速度实测，2026-09-11 复核）</h3>
 
   <p data-page-node-id="bench-note">速度数据是 2026-09-07 跑的，到现在还是最新的一组基准；稳定性是 09-10 复核的，见下。</p>
@@ -525,6 +525,8 @@ pkill -f "ollama serve" && sleep 2 && open -a Ollama</code></pre>
   </table>
 
   <p data-page-node-id="gsqBenchNote">* GSQ 列为同条件 12 题 A/B 实测（temperature=0），测法与上方 MLX/Q5 短基准不同，仅作量级参考；完整四模型对照见下文「四模型严格 A/B 实测」。</p>
+
+  <p data-page-node-id="MTP-note-bench">关于「MLX 快约 2 倍」的澄清：MTP 投机解码是 Qwen3.8 模型自带的加速能力，<b>GGUF 与 MLX 都需在 Modelfile 写 draft_num_predict 3 才生效（输出无损）</b>，属于两个版本共有的提速项，<b>不是 MLX 独占优势</b>。MLX 的约 2 倍速度主要来自原生引擎本身，MTP 再叠加约 +85%（代码类）——两个杠杆叠加，才让 MLX 实测冲到 40 tok/s 上下。</p>
 
   <h3 data-page-node-id="ab4-title">四模型严格 A/B 实测（2026-09-15）</h3>
 
@@ -597,7 +599,3 @@ pkill -f "ollama serve" && sleep 2 && open -a Ollama</code></pre>
   </ul>
   
   <p data-page-node-id="yHkOE2yXoh1t9Co6IMgivc">现在这套方案已经稳定运行，每天陪我写代码、分析文档、整理思路，效率提升明显。</p>
-
-</div>
-</body>
-</html>
