@@ -1,3 +1,8 @@
+---
+permalink: /guide/
+title: 完整部署方案
+---
+
 # Mac 本地部署 Qwen3.8-27B 完整指南（Apple Silicon / Ollama）
 
 面向 macOS Apple Silicon 用户的本地大模型部署教程：基于 M5 Pro / 48GB 实测，覆盖 Ollama + MLX 与 GGUF 量化方案对比、MTP 投机解码加速、国内镜像下载与完整避坑。
