@@ -2,6 +2,9 @@
 
 > 一份基于 M5 Pro / 48GB 实测的本地大模型部署教程，覆盖 Ollama + MLX 与 GGUF 量化方案对比、MTP 投机解码加速、国内镜像下载与完整避坑手册。面向 macOS Apple Silicon（M1–M5）用户。
 
+## English
+- [English Guide](./README.en.md): Full English translation of the deployment guide — quantization decision, 8-step setup, MTP, API usage, FAQ. For English AI queries / international readers.
+
 ## 快速开始
 - [README](./README.md): 8 步完整部署流程，从环境检查、量化选型、模型下载到 API 调用与图片理解验证
 - [性能对比与量化指南](./性能对比与量化指南.md): 各量化档位（MLX nvfp4 / Q5_K_M / GSQ IQ3_S / IQ3_XXS）的速度、体积、质量对比与选型决策表
