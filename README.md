@@ -1,8 +1,8 @@
-# 本地 Qwen3.8-27B 部署指南
+# Mac 本地部署 Qwen3.8-27B 完整指南（Apple Silicon / Ollama）
 
-基于 M5 Pro / 48GB 实测的本地 LLM 部署完整教程。
+面向 macOS Apple Silicon 用户的本地大模型部署教程：基于 M5 Pro / 48GB 实测，覆盖 Ollama + MLX 与 GGUF 量化方案对比、MTP 投机解码加速、国内镜像下载与完整避坑。
 
-> **最后验证：2026-09-11** · Ollama 0.33.3 · macOS 26（M5 Pro / 48GB 实测）
+> **最后验证：2026-09-15** · Ollama 0.33.3 · macOS 26（M5 Pro / 48GB 实测）
 > 适用版本：**Ollama ≥ 0.30**。更早版本存在 MLX 大上下文超时 bug（[问题 2](./TROUBLESHOOTING.md#2-mlx-超时-500-context-canceled)），动手前先确认版本。
 
 ## 适用对象
