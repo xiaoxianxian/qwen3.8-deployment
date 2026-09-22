@@ -1,3 +1,8 @@
+---
+permalink: /config/
+title: 当前配置与验证
+---
+
 # Qwen3.8-27B 本地部署配置快照
 
 ## 模型信息
