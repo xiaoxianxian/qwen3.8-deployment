@@ -1,0 +1,18 @@
+# 本地 Qwen3.8-27B 部署指南（Mac / Apple Silicon）
+
+> 一份基于 M5 Pro / 48GB 实测的本地大模型部署教程，覆盖 Ollama + MLX 与 GGUF 量化方案对比、MTP 投机解码加速、国内镜像下载与完整避坑手册。面向 macOS Apple Silicon（M1–M5）用户。
+
+## 快速开始
+- [README](./README.md): 8 步完整部署流程，从环境检查、量化选型、模型下载到 API 调用与图片理解验证
+- [性能对比与量化指南](./性能对比与量化指南.md): 各量化档位（MLX nvfp4 / Q5_K_M / GSQ IQ3_S / IQ3_XXS）的速度、体积、质量对比与选型决策表
+
+## 关键文档
+- [TROUBLESHOOTING](./TROUBLESHOOTING.md): 按报错现象索引的排查手册（现象 → 根因 → 影响版本 → 修复版本 → 绕过命令）
+- [A_B 实测对比报告](./A_B实测对比报告.md): 4 模型严格 12 题 A/B 原始数据与逐题校验
+- [配套文章（图文版）](./公众号文章-本地部署Qwen3.8.html): 完整踩坑过程与选型思路叙述
+
+## 核心结论
+- 推荐方案：MLX 原生版 `qwen3.8:27b-mlx`，M5 Pro 实测约 30–40 tok/s；需手动开启 MTP 投机解码（`draft_num_predict 3`）
+- 省显存方案：GSQ-RCO IQ3_S（约 12GB，质量基本无损），适合同机还跑视频模型、显存吃紧的场景
+- 适用：macOS M1–M5、内存 ≥ 16GB（32GB 起流畅，48GB 为完整实测环境）；不适用：非 Apple Silicon、生产级多用户并发
+- 最后验证：2026-09-15 · Ollama 0.33.3
