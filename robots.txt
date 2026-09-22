@@ -1,0 +1,4 @@
+User-agent: *
+Allow: /
+
+Sitemap: https://xiaoxianxian.github.io/qwen3.8-deployment/sitemap.xml
