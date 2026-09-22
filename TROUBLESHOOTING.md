@@ -1,3 +1,8 @@
+---
+permalink: /troubleshooting/
+title: 踩坑排查手册
+---
+
 # Qwen3.8 本地部署排查手册（TROUBLESHOOTING）
 
 > 按现象索引的排查手册，内容来自 M5 Pro 48GB / macOS 实测踩坑记录（2026-09）。
