@@ -1,7 +1,7 @@
 title: 本地部署 Qwen3.8-27B 完整指南
 description: Mac / Apple Silicon 本地部署 Qwen3.8-27B 实战教程：Ollama、MLX 量化、MTP 投机解码提速、国内镜像、真实踩坑与 A/B 实测。
-url: https://xiaoxianxian.github.io
-baseurl: /qwen3.8-deployment
+url: https://qwen.sifking.cn
+baseurl: ""
 plugins:
   - jekyll-sitemap
 exclude:
