@@ -19,3 +19,7 @@ IDEA.md
 docs/
 scripts/
 
+
+# 项目记忆（老板 2026-10-03 定规）：MEMORY 只在本地 memory-records 分支留痕，永不 push 到 GitHub（pre-push 闸门双保险）
+MEMORY.md
+MEMORY-*.md
