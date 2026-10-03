@@ -34,6 +34,30 @@
 - MTPLX + MTP：22.90 / 23.17 / 23.04
 - MTPLX 关 MTP：11.72 / 11.41 / 10.11
 
+### 顺手测的 runtime profile：换哪个都赢不了
+
+MTPLX 有六个 `--profile`（`stable` / `performance-cold` / `sustained` / `turbo` / `exact` / `max-diagnostic`），
+27B 旗舰默认自动 resolve 到 turbo。都带 MTP、同一条长文 prompt、各 3 轮：
+
+| profile | 首 token | 解码 tok/s | 端到端 tok/s | 峰值内存 | 三轮 decode |
+|---|---|---|---|---|---|
+| `turbo` | 1.10 s | **23.04** | 22.57 | 22.7 GB | 22.90 / 23.17 / 23.04 |
+| `stable` | 1.42 s | 20.42 | 19.93 | 23.4 → 25.9 GB（逐轮涨） | 20.42 / 21.01 / 18.23 |
+| `sustained` | 1.37 s | 18.47 | 18.11 | 21.3 → 21.8 GB（压着涨） | 20.83 / 18.47 / 17.28 |
+
+三条：
+
+1. **profile 只改变"用哪种姿势输"。** 最快的 turbo 也差 Ollama 14%，`sustained` 差 31%。
+   调档是在 MTPLX 内部找相对最优，跟"要不要换引擎"是两个问题。
+2. **`sustained` 这个名字有反讽。** 自称"持续吞吐最好"的档，实测最慢，三轮衰减最陡（−17%）。
+3. **稳定性排序 turbo > stable > sustained。** turbo 三轮几乎不掉，另两个逐轮下滑，
+   长跑场景这个差别会被放大。
+
+内存策略也不同：`stable` 的峰值从 23.4 GB 涨到 25.9 GB（会话缓存越攒越多），
+`sustained` 主动把增长压在 21.8 GB 内。小内存机器上有意义，48 GB 上无所谓。
+
+**结论：真装了别改 profile，默认 turbo 就是实测最快的档。** 要省内存直接上小模型，比调档有效。
+
 ## 机制：MTP 的钱赚在哪、亏在哪
 
 投机解码的逻辑是「小模型先Draft几个token，大模型一次性验证」。赚不赚，只看一件事：**接受率**。
@@ -61,7 +85,8 @@ MTP 那 100% 的收益，全来自「一次验证收 3 个」这个倍数，不�
 
 1. 基准机是 **M5 Max**，本测是 **M5 Pro**，同代不同 SKU；
 2. workload 是 "Optimized Speed rewriting a file it just wrote, stock settings" —— 重写刚写完的文件，连贯、接受率高；
-3. 跑的是 stock 设置，这里用 `turbo` profile。
+3. 跑的是 stock 设置，长文那组用 `turbo` profile（已补测 `stable` 20.42 / `sustained` 18.47，都是同量级落后）。
+4. 只跑单并发。多请求调度（`--scheduler-mode` / `--batching-preset`）与 16 GB 小模型档位未测。
 
 宣传页给的是峰值 workload，不是通用吞吐。拿它跟通用吞吐比，等于拿赛车圈速比家用车油耗。
 
@@ -86,6 +111,7 @@ MTP 那 100% 的收益，全来自「一次验证收 3 个」这个倍数，不�
 | 长文生成、日常 agent | **继续用 Ollama**，不要换 |
 | 短输出 + 高接受率（代码续写、格式生成） | 值得自己跑一轮 `--no-mtp` 对照再决定 |
 | 内存紧张、想并行别的任务 | MTPLX 峰值低 10 GB（21.4 vs 32），这是它唯一实打实的优势 |
+| 已经装了 MTPLX 想调参 | 别动 `--profile`。`turbo` 就是实测最快的档，改它只会更慢 |
 | 只看官方 tok/s 就下单 | 别。用你自己的真实任务跑 3 轮，比看任何宣传页管用 |
 
 ## 怎么复现

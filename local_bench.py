@@ -75,7 +75,7 @@ def one_run(kind, base, model, max_tokens, api_key, reasoning):
                 continue
             if line.startswith("data:"):
                 line = line[5:].strip()
-            if not line or line == "[DONE]":
+            if not line or line in ("[DONE]", "DONE"):
                 continue
             d = json.loads(line)
             if kind == "ollama":
