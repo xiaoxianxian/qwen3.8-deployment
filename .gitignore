@@ -23,3 +23,6 @@ scripts/
 # 项目记忆（老板 2026-10-03 定规）：MEMORY 只在本地 memory-records 分支留痕，永不 push 到 GitHub（pre-push 闸门双保险）
 MEMORY.md
 MEMORY-*.md
+
+# 跨 agent 项目状态（内部资产，2026-10-10 补：与 multi-proxy/Portico 的 .gitignore 对齐，防 git add -A 夹带进公开仓）
+PROJECT-STATE/
