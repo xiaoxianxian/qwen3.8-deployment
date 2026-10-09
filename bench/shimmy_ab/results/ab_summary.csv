@@ -1,0 +1,7 @@
+round,engine,wall_s,ttft_s,chars,eval_count,server_tps,error
+1,ollama,0.16,0.037,149,26,245.67,
+1,shimmy,152.32,18.562,971,0,None,
+2,ollama,0.53,0.071,149,26,58.68,
+2,shimmy,158.27,12.468,1017,0,None,
+3,ollama,0.42,0.067,149,26,74.51,
+3,shimmy,244.89,17.125,724,0,None,

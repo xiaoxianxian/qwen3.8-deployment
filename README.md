@@ -367,6 +367,24 @@ MTPLX 只吃 MLX 档案、Apple Silicon 专用；官方标的 87.6 tok/s 本机�
 和六个部署坑（含「分片下坏了但文件大小完全正确 → 全词表 NaN」）见
 **[MTPLX引擎实测-vs-Ollama.md](./MTPLX引擎实测-vs-Ollama.md)**。想自己复现用 `local_bench.py`。
 
+## 在 agent 框架里跑本地模型：会话语境膨胀避坑（2026-10-10）
+
+把本地模型接进 Hermes / Claude Code / Codex 这类 **agent 框架**（长会话、多工具调用）时，很多人会撞上一个怪现象：
+
+> 随便聊 1-2 轮，会话体积就涨到 **1MB+**、触发上下文超限告警；换远程 API 模型聊好几轮才 300KB，稳得很。
+
+这**不是模型笨，也不是 thinking 开关的错**——是「拿不到真实 token 计数 + 窗口分母偏小 + 压缩摘要自己压自己超时失败 + 旧工具返回不裁」四个机制叠加。**关掉 thinking 治不了超限**（thinking 默认不进入发送账本），真正要修的是压缩和裁剪。
+
+修法分两档：
+- **方案 A（推荐，纯本地零隐私代价）**：开 `micro_compact` 每轮折叠旧工具结果 + 把压缩超时放宽到 300s。
+- **方案 B（兜底，摘要外发）**：本地仍压不动时，把**摘要模型**单独指一个云端快档（注意：只摘要外发，主对话仍本地）。
+
+诊断顺序（换任何本地模型都通用：Qwen / GLM / Llama / Mistral…）：
+1. `ollama ps` 看真实 `num_ctx`；2. 框架发的是流式吗（流式 Ollama 不返 usage）；3. 框架配置里的 `context_length` 是**真键还是死键**；4. 压缩摘要是 `auto` 还是外部模型、有没有 `summary failed` 日志；5. 有没有开裁剪旧工具结果。
+
+完整根因、实测证据、可直接复制的 config 键、自检清单见
+**[本地模型会话语境膨胀避坑.md](./本地模型会话语境膨胀避坑.md)**。
+
 ## 常见问题
 
 > 按现象索引的完整排查手册（9 个常见问题 + 根因 + 修复命令）见 **[TROUBLESHOOTING.md](./TROUBLESHOOTING.md)**，以下为高频简答。
@@ -409,6 +427,23 @@ MLX 原生版 `qwen3.8:27b-mlx` 自带视觉投影，直接发图即可，无需
 > 欢迎提交 Issue / PR，补充其他硬件（M1–M4、不同内存档位）的实测数据，一起完善硬件对照表。
 
 ---
+
+## 外部收录与推广（信任票）
+
+到 2026-10-05 为止，本仓库主动提进社区目录列表的 PR 一共 3 个，**3 个都还没被合并**：
+
+| 列表 | PR | 状态 | 列表活跃度 |
+| --- | --- | --- | --- |
+| [rafska/awesome-local-llm](https://github.com/rafska/awesome-local-llm) | [#229](https://github.com/rafska/awesome-local-llm/pull/229) | 待合并 | ★2.9k，2 天前还在更新 |
+| [awesome-ai-tools/curated-local-ai](https://github.com/awesome-ai-tools/curated-local-ai) | [#5](https://github.com/awesome-ai-tools/curated-local-ai/pull/5) | 待合并 | ★7，2026-03 后无人维护 |
+| [iCHAIT/awesome-macOS](https://github.com/iCHAIT/awesome-macos) | [#1139](https://github.com/iCHAIT/awesome-macos/pull/1139) | 待合并 | ★19k，43 天前更新 |
+
+另外两条实测结论，记录在此免得后来人重踩：
+
+- **别往主仓库贴**。GitHub 上最火的那个 awesome 主仓库（`sindresorhus/awesome`），仓库描述里自己写着「Pull requests are temporarily disabled until I have a chance to catch up with the existing ones」——PR 入口是关着的，星再高也不收。
+- **贴之前先看列表收不收「文档/指南类」**。有的目录列表是 bot 自动生成的，只收可运行软件，提文档类进去会被拒（awesome-selfhosted 就是这类，别白跑）。
+
+顺带一句：PR 进目录只是「多一条外链」的信任票，不是「被权威认证」。`gh pr create` 用的是你自己账号，代提、代撤都行，但结果要自己盯。
 
 ## 联系作者
 
