@@ -62,12 +62,13 @@ def main():
     for m in models:
         rs = [r for r in rows if r["model"] == m]
         dec = [float(r["decode_tps"]) for r in rs]
-        pre = [float(r["prefill_tps"]) for r in rs]
+        pre_nz = [float(r["prefill_tps"]) for r in rs if float(r["prefill_tps"]) > 0]
         gen = [int(r["gen_tokens"]) for r in rs]
         agg[m] = {
             "n": len(rs),
             "avg_decode": sum(dec)/len(dec) if dec else 0,
-            "avg_prefill": sum(pre)/len(pre) if pre else 0,
+            "avg_prefill": (sum(pre_nz)/len(pre_nz) if pre_nz else 0),
+            "prefill_n": len(pre_nz),
             "avg_gen": sum(gen)/len(gen) if gen else 0,
             "size": sizes.get(m, MODEL_META[m]["fallback_size"]),
         }
@@ -86,13 +87,14 @@ def main():
     L.append(f"> 方法：同一套 12 题（temperature=0、num_predict=1024 对齐可比）。双引擎：Ollama 走 /api/chat（27B NVFP4），Sushi 走 /v1/chat/completions（Flash-Next 2bpw）。为消除 48GB 内存天花板下两模型不能共存的约束，逐模型串行跑、跑完即卸载。Flash-Next 每题重启服务清 KV，避免 prefill 因 KV 耗尽 400。\n")
 
     L.append("## 一、体积 vs 速度 vs 吞吐（汇总，12 题均值）\n")
-    L.append("| 模型 | 量化 | bpw | 体积(GB) | 平均 decode (tok/s) | 平均 prefill (tok/s) | 平均生成 token |")
+    L.append("| 模型 | 量化 | bpw | 体积(GB) | 平均 decode (tok/s) | 平均 prefill (tok/s，仅计有返回的题) | 平均生成 token |")
     L.append("|---|---|---|---|---|---|---|")
     for m in models:
         a = agg[m]; meta = MODEL_META[m]
-        L.append(f"| {meta['label']} | {m} | {meta['bpw']} | {a['size']} | {a['avg_decode']:.2f} | {a['avg_prefill']:.1f} | {a['avg_gen']:.0f} |")
+        pf = f"{a['avg_prefill']:.1f}（{a['prefill_n']}/{a['n']} 题）" if a["prefill_n"] else "—（未返回）"
+        L.append(f"| {meta['label']} | {m} | {meta['bpw']} | {a['size']} | {a['avg_decode']:.2f} | {pf} | {a['avg_gen']:.0f} |")
     L.append("")
-    L.append("> 体积取 `ollama list` 显示值；decode = eval_count/eval_duration（Ollama）或 timings.predicted_ms/predicted_n（Sushi）。\n")
+    L.append("> 体积取 `ollama list` 显示值；decode = eval_count/eval_duration（Ollama）或 timings.predicted_ms/predicted_n（Sushi）。⚠️ prefill 只对**有返回值的题**取均值，不用 0 充数：Sushi 在本套 12 题中有 8 题未返回 prefill 耗时（CSV 记为 0，属未采集而非真 0），故该列附注分母。\n")
 
     L.append("## 二、逐题 decode 速度对比 (tok/s)\n")
     head = "| 题号 | 类别 | " + " | ".join(MODEL_META[m]['label'] for m in models) + " |"

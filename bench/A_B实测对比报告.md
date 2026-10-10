@@ -1,17 +1,17 @@
 # Qwen3.8-27B 量化方案 A/B 实测对比报告
 
-> 生成时间：2026-10-10 23:54  
+> 生成时间：2026-10-11 00:07  
 > 测试环境：MacBook Pro / M5 Pro / 48GB 统一内存 / Ollama 0.33.3  
 > 方法：同一套 12 题（temperature=0、num_predict=1024 对齐可比）。双引擎：Ollama 走 /api/chat（27B NVFP4），Sushi 走 /v1/chat/completions（Flash-Next 2bpw）。为消除 48GB 内存天花板下两模型不能共存的约束，逐模型串行跑、跑完即卸载。Flash-Next 每题重启服务清 KV，避免 prefill 因 KV 耗尽 400。
 
 ## 一、体积 vs 速度 vs 吞吐（汇总，12 题均值）
 
-| 模型 | 量化 | bpw | 体积(GB) | 平均 decode (tok/s) | 平均 prefill (tok/s) | 平均生成 token |
+| 模型 | 量化 | bpw | 体积(GB) | 平均 decode (tok/s) | 平均 prefill (tok/s，仅计有返回的题) | 平均生成 token |
 |---|---|---|---|---|---|---|
-| MLX 4-bit (NVFP4, Ollama 11434) | qwen3.8:27b-mlx | 4.0 | 18 | 25.91 | 176.3 | 869 |
-| Qwen3.8-Flash-Next 2bpw (Sushi 12345) | beamster/Qwen3.8-Flash-Next-Sushi-2bpw | 2.0 | 37 | 25.52 | 59.1 | 709 |
+| MLX 4-bit (NVFP4, Ollama 11434) | qwen3.8:27b-mlx | 4.0 | 18 | 25.91 | 176.3（12/12 题） | 869 |
+| Qwen3.8-Flash-Next 2bpw (Sushi 12345) | beamster/Qwen3.8-Flash-Next-Sushi-2bpw | 2.0 | 37 | 25.52 | 177.3（4/12 题） | 709 |
 
-> 体积取 `ollama list` 显示值；decode = eval_count/eval_duration（Ollama）或 timings.predicted_ms/predicted_n（Sushi）。
+> 体积取 `ollama list` 显示值；decode = eval_count/eval_duration（Ollama）或 timings.predicted_ms/predicted_n（Sushi）。⚠️ prefill 只对**有返回值的题**取均值，不用 0 充数：Sushi 在本套 12 题中有 8 题未返回 prefill 耗时（CSV 记为 0，属未采集而非真 0），故该列附注分母。
 
 ## 二、逐题 decode 速度对比 (tok/s)
 

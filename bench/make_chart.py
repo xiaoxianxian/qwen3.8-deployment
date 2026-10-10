@@ -8,8 +8,8 @@ import matplotlib.pyplot as plt
 from matplotlib import font_manager
 from matplotlib.lines import Line2D
 
-ART = "/Users/xiaota/Documents/AI项目/本地部署Qwen3.8"
-CSV = os.path.join(ART, "bench/ab_results/summary.csv")
+ART = "/Users/xiaota/Documents/AI项目/文章体系/文章库/文章-本地部署Qwen3.8-Flash-Next"
+CSV = "/Users/xiaota/Documents/AI项目/本地部署Qwen3.8/bench/ab_results/summary.csv"
 OUT = os.path.join(ART, "配图-12题速度对比-FlashNext-vs-27B.png")
 
 FN = "beamster/Qwen3.8-Flash-Next-Sushi-2bpw"
@@ -28,7 +28,7 @@ print("font:", chosen or "NONE(fallback)")
 # ---- 读数据 ----
 rows = list(csv.DictReader(open(CSV, encoding="utf-8")))
 order = ["A1", "A2", "A3", "A4", "B1", "B2", "C1", "D1", "E1", "E2", "F1", "F2"]
-cat = {"A1": "代码生成", "A2": "代码生成", "A3": "代码生成", "A4": "代码生成",
+cat = {"A1": "编码代理", "A2": "编码代理", "A3": "编码代理", "A4": "编码代理",
        "B1": "数学推理", "B2": "数学推理", "C1": "知识问答", "D1": "长上下文",
        "E1": "结构化输出", "E2": "结构化输出", "F1": "中文写作", "F2": "中文写作"}
 d = {}
@@ -86,13 +86,13 @@ ax.tick_params(axis="x", colors="#555555")
 ax.xaxis.grid(True, color="#EFEFEF", lw=1)
 ax.set_axisbelow(True)
 
-ax.set_title("12 题本机实测：整体均值打平，收益与塌方各占一半",
+ax.set_title("12 题本机实测：整体均值打平，快的六道与慢的六道各占一半",
              fontsize=15, fontweight="bold", color="#111111", pad=16, loc="left")
-ax.text(0, -0.9, "M5 Pro / 48GB / macOS · Flash-Next 2bpw(Sushi) vs 27B NVFP4(Ollama) · 2026-10-10 · 同 12 题 temperature=0",
+ax.text(0, -0.9, "M5 Pro / 48GB / macOS · Flash-Next 2bpw(Sushi) vs 27B NVFP4 4-bit(Ollama) · 2026-10-10 · 同 12 题\n快慢两分组为跑完之后按结果划分，非事先定义的题型分组",
         fontsize=9.5, color="#888888", transform=ax.transAxes, ha="left")
 
 handles = [b1[0], b2[0]]
-ax.legend(handles, ["27B（Ollama, NVFP4）", "Flash-Next（Sushi, 2bpw）"],
+ax.legend(handles, ["27B（Ollama，NVFP4 4-bit）", "Flash-Next（Sushi，2bpw）"],
           loc="upper right", frameon=False, fontsize=11, ncol=1,
           bbox_to_anchor=(1.0, 1.02))
 
