@@ -1,0 +1,52 @@
+## SQL 写法
+
+```sql
+SELECT dept, name, salary, rk AS rank
+FROM (
+    SELECT
+        dept,
+        name,
+        salary,
+        RANK() OVER (PARTITION BY dept ORDER BY salary DESC) AS rk
+    FROM employees
+) t
+WHERE rk <= 3
+ORDER BY dept, rk;
+```
+
+## 逐层解释
+
+| 层次 | 作用 |
+|------|------|
+| `PARTITION BY dept` | 按部门分组，排名在每个部门内独立计算 |
+| `ORDER BY salary DESC` | 薪资**降序**排列（高→低） |
+| `RANK()` | 并列薪资共享同一名次（如两人并列第1，下一位是第3） |
+| 外层 `WHERE rk <= 3` | 只保留每个部门的前 3 名 |
+
+## 三种排名函数的区别（供选择）
+
+```
+薪资: 9000, 9000, 8000, 7000
+
+ROW_NUMBER()  →  1, 2, 3, 4   （严格不并列，随机打破平局）
+RANK()        →  1, 1, 3, 4   （并列后跳号）
+DENSE_RANK()  →  1, 1, 2, 3   （并列后不跳号）
+```
+
+- 如果要求"恰好取 3 人"（即使有并列也只取 3 行），用 **`ROW_NUMBER()`**。
+- 如果要求"薪资前 3 档"（并列都保留），用 **`RANK()`** 或 **`DENSE_RANK()`**。
+
+## 示例输出
+
+```
+dept    name    salary   rank
+------  ------  -------  ----
+研发    张三     15000     1
+研发    李四     12000     2
+研发    王五     10000     3
+市场    赵六     13000     1
+市场    孙七     11000     2
+市场    周八      9000     3
+```
+
+> **兼容性**：以上写法适用于 MySQL 8.0+、PostgreSQL、SQL Server、Oracle 等支持窗口函数的数据库。

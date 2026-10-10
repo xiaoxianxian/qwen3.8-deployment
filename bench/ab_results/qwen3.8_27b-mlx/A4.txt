@@ -1,0 +1,129 @@
+## 拆分后的代码
+
+```python
+from __future__ import annotations
+from pathlib import Path
+from typing import Protocol
+
+
+# ──────────────────────────────────────────────
+# 1. 读：只负责"把字节变成行"
+# ──────────────────────────────────────────────
+def read_raw(path: str | Path) -> list[str]:
+    """将文件读入内存，返回原始行列表（保留换行符）。
+
+    不关心内容含义，不关心下游怎么用。
+    可替换为 read_from_s3 / read_from_kafka 等，接口不变。
+    """
+    with open(path, encoding="utf-8") as f:
+        return f.readlines()
+
+
+# ──────────────────────────────────────────────
+# 2. 解析 + 过滤：纯函数，无 I/O
+# ──────────────────────────────────────────────
+def parse_and_filter(raw_lines: list[str]) -> list[str]:
+    """从原始行中提取有效记录。
+
+    规则（当前）：
+      - 去除首尾空白
+      - 必须包含 'ERROR'
+      - 原始长度 > 10
+
+    纯函数：相同输入 → 相同输出，无副作用，可独立单测。
+    """
+    return [
+        line.strip()
+        for line in raw_lines
+        if "ERROR" in line and len(line) > 10
+    ]
+
+
+# ──────────────────────────────────────────────
+# 3. 写：只负责"把记录落库"
+# ──────────────────────────────────────────────
+class Database(Protocol):
+    """最小写接口，方便 mock / 替换。"""
+    def insert(self, row: str) -> None: ...
+
+
+def persist(rows: list[str], db: Database) -> int:
+    """将记录批量写入数据库，返回写入条数。
+
+    不关心记录从哪来、怎么过滤的。
+    可替换为 persist_to_s3 / persist_to_kafka 等。
+    """
+    for row in rows:
+        db.insert(row)
+    return len(rows)
+
+
+# ──────────────────────────────────────────────
+# 编排层：一行 pipeline，职责清晰
+# ──────────────────────────────────────────────
+def process(path: str | Path, db: Database) -> int:
+    """完整流水线：读 → 解析过滤 → 写库。"""
+    raw = read_raw(path)
+    records = parse_and_filter(raw)
+    return persist(records, db)
+```
+
+---
+
+## 接口契约一览
+
+| 函数 | 输入 | 输出 | 副作用 | 可替换点 |
+|---|---|---|---|---|
+| `read_raw` | 文件路径 | `list[str]`（原始行） | 读磁盘 | 换 S3 / Kafka / 网络 |
+| `parse_and_filter` | `list[str]` | `list[str]`（干净记录） | **无**（纯函数） | 换过滤规则 / 正则 / 反序列化 |
+| `persist` | `list[str]` + `db` | 写入条数 `int` | 写数据库 | 换 S3 / 消息队列 / 文件 |
+
+---
+
+## 这样拆分的好处
+
+### 1. 单一职责 → 改一处不动其余
+- 过滤规则变了？只改 `parse_and_filter`，`read_raw` 和 `persist` 零改动。
+- 数据源从本地文件换成 S3？只写一个 `read_from_s3`，下游完全复用。
+
+### 2. 可独立测试
+```python
+# 不需要真文件、不需要真数据库
+assert parse_and_filter(["  ERROR: disk full  \n", "ok\n"]) == ["ERROR: disk full"]
+assert persist(["a", "b"], FakeDB()) == 2
+```
+原函数要 mock 文件 + mock 数据库才能跑一条测试；拆分后每个函数只需 mock 自己那一层。
+
+### 3. 可组合 / 可编排
+```python
+# 跳过写库，只做分析
+records = parse_and_filter(read_raw("log.txt"))
+print(len(records))
+
+# 同一份数据写两个目标
+records = parse_and_filter(read_raw("log.txt"))
+persist(records, db_primary)
+persist(records, db_replica)
+```
+原函数把三步焊死，无法复用中间结果。
+
+### 4. 错误隔离与可观测性
+每层可独立加日志 / 重试 / 超时：
+```python
+raw = read_with_retry(path, max_retries=3)   # 网络抖动只重试读
+records = parse_and_filter(raw)               # 解析异常不影响已读数据
+persist(records, db)                          # 写库失败可单独回滚
+```
+
+### 5. 函数名即文档
+调用方看到 `read_raw → parse_and_filter → persist`，三秒理解数据流；
+原 `process` 内部 5 行代码要逐行读才知道它同时干了 I/O、字符串处理、数据库操作三件事。
+
+### 6. 并发 / 流式扩展
+纯函数 `parse_and_filter` 天然可并行化（`map` / `multiprocessing`）；
+`read_raw` 可改为生成器 `yield` 逐行产出，`persist` 改为批量 `executemany`，
+而接口签名 `list[str] → list[str]` 不变，调用方无感知。
+
+---
+
+> **一句话总结**：拆分前是一个"黑箱过程"，拆分后是一条**可观测、可替换、可测试、可组合**的管道——每一步的输入输出都是显式契约，而非藏在函数体里的隐式耦合。

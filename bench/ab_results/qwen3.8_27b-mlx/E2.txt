@@ -1,0 +1,2 @@
+[{"tool":"get_weather","args":{"city":"北京","date":"明天"}},{"tool":"send_reminder","args":{"text":"明天北京有雨，出门记得带伞！"}}]
+</think>

@@ -1,0 +1,55 @@
+# 求解满足条件的最小正整数 n
+
+## 问题条件
+
+$$n \equiv 2 \pmod{3}, \quad n \equiv 3 \pmod{5}, \quad n \equiv 2 \pmod{7}$$
+
+## 逐步代入法
+
+### 第一步：处理第一个同余式
+
+由 $n \equiv 2 \pmod{3}$，设：
+
+$$n = 3k + 2 \quad (k \in \mathbb{Z}_{\geq 0})$$
+
+### 第二步：代入第二个同余式
+
+将 $n = 3k + 2$ 代入 $n \equiv 3 \pmod{5}$：
+
+$$3k + 2 \equiv 3 \pmod{5}$$
+$$3k \equiv 1 \pmod{5}$$
+
+求 $3$ 在模 $5$ 下的逆元：因为 $3 \times 2 = 6 \equiv 1 \pmod{5}$，所以逆元为 $2$。
+
+$$k \equiv 2 \pmod{5}$$
+
+设 $k = 5m + 2$，代回得：
+
+$$n = 3(5m + 2) + 2 = 15m + 8$$
+
+### 第三步：代入第三个同余式
+
+将 $n = 15m + 8$ 代入 $n \equiv 2 \pmod{7}$：
+
+$$15m + 8 \equiv 2 \pmod{7}$$
+$$15m \equiv -6 \equiv 1 \pmod{7}$$
+
+因为 $15 \equiv 1 \pmod{7}$，所以：
+
+$$m \equiv 1 \pmod{7}$$
+
+设 $m = 7t + 1$，代回得：
+
+$$n = 15(7t + 1) + 8 = 105t + 23$$
+
+### 第四步：取最小正整数
+
+当 $t = 0$ 时，$n = 23$。
+
+## 验证
+
+| 条件 | 计算 | 结果 |
+|------|------|------|
+| $n \equiv 2 \pmod{3}$ | $23 \div 3 = 7 \cdots 2$ | ✅ |
+| $n \equiv 3 \pmod{5}$ | $23 \div 5 = 4 \cdots 3$ | ✅ |
+| $n \equiv 2 \pmod{7}$ | $23 \div 7 = 3

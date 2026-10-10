@@ -1,0 +1,62 @@
+```python
+# lru_cache.py
+import threading
+from collections import OrderedDict
+from typing import Optional
+
+
+class LRUCache:
+    """线程安全的 LRU 缓存，get/put 平均 O(1)。"""
+
+    def __init__(self, capacity: int):
+        if capacity <= 0:
+            raise ValueError("capacity must be positive")
+        self._capacity = capacity
+        self._cache: OrderedDict = OrderedDict()
+        self._lock = threading.Lock()
+
+    def get(self, key) -> Optional:
+        with self._lock:
+            if key not in self._cache:
+                return None
+            self._cache.move_to_end(key)
+            return self._cache[key]
+
+    def put(self, key, value) -> None:
+        with self._lock:
+            if key in self._cache:
+                self._cache.move_to_end(key)
+            self._cache[key] = value
+            if len(self._cache) > self._capacity:
+                self._cache.popitem(last=False)
+```
+
+```python
+# test_lru_cache.py
+import threading
+import pytest
+from lru_cache import LRUCache
+
+
+# ---------- 1. 基本读写 ----------
+
+def test_basic_read_write():
+    cache = LRUCache(capacity=3)
+    cache.put("a", 1)
+    cache.put("b", 2)
+    cache.put("c", 3)
+
+    assert cache.get("a") == 1
+    assert cache.get("b") == 2
+    assert cache.get("c") == 3
+    assert cache.get("missing") is None
+
+    # 覆盖已有 key
+    cache.put("a", 10)
+    assert cache.get("a") == 10
+    assert len(cache._cache) == 3
+
+
+# ---------- 2. 容量淘汰 ----------
+
+def test_eviction():

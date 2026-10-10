@@ -1,0 +1,99 @@
+## 拆分后的代码
+
+```python
+from typing import List
+from pathlib import Path
+
+
+def read_raw(path: str | Path) -> List[str]:
+    """职责：从文件读取原始行。不做任何解析或过滤。"""
+    with open(path) as f:
+        return f.readlines()
+
+
+def parse_and_filter(lines: List[str]) -> List[str]:
+    """职责：对原始行做解析 + 过滤。不关心数据从哪来、往哪去。"""
+    return [
+        line.strip()
+        for line in lines
+        if 'ERROR' in line and len(line) > 10
+    ]
+
+
+def persist(rows: List[str], db) -> None:
+    """职责：将已过滤的行写入数据库。不关心数据从哪来。"""
+    for row in rows:
+        db.insert(row)
+
+
+# ---------- 组合调用 ----------
+def process(path: str | Path, db) -> None:
+    lines = read_raw(path)
+    rows  = parse_and_filter(lines)
+    persist(rows, db)
+```
+
+---
+
+## 接口契约一览
+
+| 函数 | 输入 | 输出 | 副作用 |
+|------|------|------|--------|
+| `read_raw` | 文件路径 | `List[str]`（原始行，含换行符） | 读磁盘 |
+| `parse_and_filter` | `List[str]` | `List[str]`（已 strip、已过滤） | 无 |
+| `persist` | `List[str]` + db 对象 | `None` | 写数据库 |
+
+---
+
+## 拆分的好处
+
+### 1. 可测试性（最直接的收益）
+
+```python
+# parse_and_filter 是纯函数，无需 mock 任何 I/O
+def test_parse_and_filter():
+    raw = ["ERROR: disk full\n", "INFO: ok\n", "ERROR: timeout\n"]
+    result = parse_and_filter(raw)
+    assert result == ["ERROR: disk full", "ERROR: timeout"]
+```
+
+原函数想测过滤逻辑，必须同时准备一个临时文件和一个 mock db——耦合了三个关注点。
+
+### 2. 可替换性（开闭原则）
+
+- 数据源从文件换成 Kafka？只改 `read_raw`。
+- 过滤规则变了？只改 `parse_and_filter`。
+- 从 MySQL 换成 ClickHouse？只改 `persist`。
+
+每个函数对修改关闭，对扩展开放。
+
+### 3. 可复用性
+
+`read_raw` 可以被日志巡检、ETL 管道等其他流程复用；`parse_and_filter` 可以被单元测试直接喂入 fixture 数据。
+
+### 4. 可读性 = 文档
+
+```python
+lines = read_raw(path)          # 一眼看出：读文件
+rows  = parse_and_filter(lines) # 一眼看出：解析+过滤
+persist(rows, db)               # 一眼看出：写库
+```
+
+调用者不需要打开函数体就能理解数据流向。
+
+### 5. 可组合 / 可编排
+
+未来需要加一步"去重"或"聚合"，只需在管道中插入新函数：
+
+```python
+lines = read_raw(path)
+rows  = parse_and_filter(lines)
+rows  = deduplicate(rows)       # 新增阶段，不动已有代码
+persist(rows, db)
+```
+
+---
+
+## 一句话总结
+
+> **一个函数只做一件事，做这件事做到极致。** 拆分后每个函数都是"黑盒"——你只需知道它的输入输出契约，无需关心内部实现，也无需为测试它而搭建整个环境。

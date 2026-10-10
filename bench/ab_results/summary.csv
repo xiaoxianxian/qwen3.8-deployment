@@ -1,0 +1,25 @@
+model,id,category,decode_tps,prefill_tps,gen_tokens,engine
+beamster/Qwen3.8-Flash-Next-Sushi-2bpw,A1,Agentic Coding,11.81,1.08,1261,sushi
+beamster/Qwen3.8-Flash-Next-Sushi-2bpw,A2,Agentic Coding,37.06,210.56,1173,sushi
+beamster/Qwen3.8-Flash-Next-Sushi-2bpw,A3,Agentic Coding,45.88,208.5,880,sushi
+beamster/Qwen3.8-Flash-Next-Sushi-2bpw,A4,Agentic Coding,10.98,288.88,1025,sushi
+beamster/Qwen3.8-Flash-Next-Sushi-2bpw,B1,Math Reasoning,16.66,0,1024,sushi
+beamster/Qwen3.8-Flash-Next-Sushi-2bpw,B2,Math Reasoning,3.63,0,599,sushi
+beamster/Qwen3.8-Flash-Next-Sushi-2bpw,C1,Knowledge (GPQA),8.99,0,592,sushi
+beamster/Qwen3.8-Flash-Next-Sushi-2bpw,D1,Long-context,1.16,0,399,sushi
+beamster/Qwen3.8-Flash-Next-Sushi-2bpw,E1,Structured Output,28.88,0,318,sushi
+beamster/Qwen3.8-Flash-Next-Sushi-2bpw,E2,Structured Output,41.32,0,316,sushi
+beamster/Qwen3.8-Flash-Next-Sushi-2bpw,F1,Chinese Writing,41.99,0,661,sushi
+beamster/Qwen3.8-Flash-Next-Sushi-2bpw,F2,Chinese Writing,57.86,0,260,sushi
+qwen3.8:27b-mlx,A1,Agentic Coding,38.19,84.69,1024,ollama
+qwen3.8:27b-mlx,A2,Agentic Coding,32.01,279.28,968,ollama
+qwen3.8:27b-mlx,A3,Agentic Coding,32.16,242.86,1024,ollama
+qwen3.8:27b-mlx,A4,Agentic Coding,29.55,269.33,1024,ollama
+qwen3.8:27b-mlx,B1,Math Reasoning,30.99,181.59,1024,ollama
+qwen3.8:27b-mlx,B2,Math Reasoning,25.01,231.91,1024,ollama
+qwen3.8:27b-mlx,C1,Knowledge (GPQA),24.89,151.75,712,ollama
+qwen3.8:27b-mlx,D1,Long-context,27.01,226.61,721,ollama
+qwen3.8:27b-mlx,E1,Structured Output,16.16,126.39,546,ollama
+qwen3.8:27b-mlx,E2,Structured Output,17.84,107.06,400,ollama
+qwen3.8:27b-mlx,F1,Chinese Writing,17.63,111.2,941,ollama
+qwen3.8:27b-mlx,F2,Chinese Writing,19.5,103.21,1017,ollama

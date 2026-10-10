@@ -1,0 +1,103 @@
+# 求满足同余条件的最小正整数
+
+## 问题重述
+
+求最小正整数 $n$，使得：
+
+$$
+n \equiv 2 \pmod{3},\quad n \equiv 3 \pmod{5},\quad n \equiv 2 \pmod{7}
+$$
+
+---
+
+## 方法一：逐步代入法（最直观）
+
+**第一步：合并前两个条件中"余数相同"的部分**
+
+注意到 $n \equiv 2 \pmod{3}$ 和 $n \equiv 2 \pmod{7}$ 余数相同。
+
+因为 $\gcd(3,7)=1$，由同余性质：
+
+$$
+n \equiv 2 \pmod{3 \times 7} \;\Longrightarrow\; n \equiv 2 \pmod{21}
+$$
+
+即 $n = 21k + 2$，$k$ 为非负整数。
+
+**第二步：代入第三个条件**
+
+将 $n = 21k+2$ 代入 $n \equiv 3 \pmod{5}$：
+
+$$
+21k + 2 \equiv 3 \pmod{5}
+$$
+
+$$
+21k \equiv 1 \pmod{5}
+$$
+
+因为 $21 \equiv 1 \pmod{5}$，所以：
+
+$$
+k \equiv 1 \pmod{5}
+$$
+
+即 $k = 5m + 1$，$m$ 为非负整数。
+
+**第三步：回代求 $n$**
+
+$$
+n = 21(5m+1)+2 = 105m + 23
+$$
+
+取 $m=0$，得最小正整数：
+
+$$
+\boxed{n = 23}
+$$
+
+---
+
+## 方法二：中国剩余定理（验证）
+
+模数 $3,5,7$ 两两互素，$N = 3\times5\times7 = 105$。
+
+| 分量 | $N_i = N/m_i$ | $N_i \bmod m_i$ | 求逆 $x_i$（$N_i x_i \equiv 1 \pmod{m_i}$） |
+|:---:|:---:|:---:|:---:|
+| $m_1=3,\; a_1=2$ | $N_1=35$ | $35\equiv 2\pmod{3}$ | $2x_1\equiv1\pmod{3}\Rightarrow x_1=2$ |
+| $m_2=5,\; a_2=3$ | $N_2=21$ | $21\equiv 1\pmod{5}$ | $x_2=1$ |
+| $m_3=7,\; a_3=2$ | $N_3=15$ | $15\equiv 1\pmod{7}$ | $x_3=1$ |
+
+$$
+n \equiv a_1 N_1 x_1 + a_2 N_2 x_2 + a_3 N_3 x_3 \pmod{105}
+$$
+
+$$
+n \equiv 2\times35\times2 + 3\times21\times1 + 2\times15\times1 \pmod{105}
+$$
+
+$$
+n \equiv 140 + 63 + 30 = 233 \equiv 23 \pmod{105}
+$$
+
+两种方法结果一致。
+
+---
+
+## 验证
+
+$$
+23 \div 3 = 7 \cdots\cdots \mathbf{2} \;\checkmark
+$$
+$$
+23 \div 5 = 4 \;\cdots\cdots \mathbf{3} \;\checkmark
+$$
+$$
+23 \div 7 = 3 \;\cdots\cdots \mathbf{2} \;\checkmark
+$$
+
+---
+
+## 结论
+
+满足条件的最小正整数为 $\boxed{23}$，通解为 $n = 105m + 23\;(m=0,1,2,\dots)$。

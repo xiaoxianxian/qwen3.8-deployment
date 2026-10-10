@@ -1,0 +1,3 @@
+```json
+[{"tool":"get_weather","args":{"city":"北京","date":"明天"}}]
+```

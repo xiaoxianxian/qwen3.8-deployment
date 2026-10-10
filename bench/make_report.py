@@ -15,10 +15,11 @@ REPORT = os.path.join(HERE, "A_B实测对比报告.md")
 
 # 模型元信息（size 优先从 ollama list 取，失败则用此兜底）
 MODEL_META = {
-    "qwen3.8:27b-mlx":          {"label": "MLX 4-bit (NVFP4 均匀)", "bpw": "4.0",  "fallback_size": 18},
-    "qwen3.8-gsq-iq3s-mtp":    {"label": "GSQ-RCO IQ3_S (3.5bpw 混合)", "bpw": "3.5", "fallback_size": 12},
-    "qwen3.8-gsq-iq3xxs-mtp":  {"label": "GSQ-RCO IQ3_XXS (3.0bpw 混合)", "bpw": "3.0", "fallback_size": 10},
-    "qwen3.8-q5:latest":       {"label": "GGUF Q5_K_M (5.6bpw 均匀)", "bpw": "5.6", "fallback_size": 20},
+    "qwen3.8:27b-mlx":          {"label": "MLX 4-bit (NVFP4, Ollama 11434)", "bpw": "4.0",  "fallback_size": 18, "engine": "ollama"},
+    "beamster/Qwen3.8-Flash-Next-Sushi-2bpw": {"label": "Qwen3.8-Flash-Next 2bpw (Sushi 12345)", "bpw": "2.0", "fallback_size": 37, "engine": "sushi"},
+    "qwen3.8-gsq-iq3s-mtp":    {"label": "GSQ-RCO IQ3_S (3.5bpw 混合)", "bpw": "3.5", "fallback_size": 12, "engine": "ollama"},
+    "qwen3.8-gsq-iq3xxs-mtp":  {"label": "GSQ-RCO IQ3_XXS (3.0bpw 混合)", "bpw": "3.0", "fallback_size": 10, "engine": "ollama"},
+    "qwen3.8-q5:latest":       {"label": "GGUF Q5_K_M (5.6bpw 均匀)", "bpw": "5.6", "fallback_size": 20, "engine": "ollama"},
 }
 
 def get_ollama_sizes():

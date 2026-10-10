@@ -1,0 +1,69 @@
+## Bug 定位
+
+问题出在 `elif` 和 `else` 两个分支中，**`count` 的增减方向写反了**。
+
+```python
+elif n == candidate:
+    count -= 1   # ❌ 相同元素却减计数
+else:
+    count += 1   # ❌ 不同元素却加计数
+```
+
+## 修复
+
+```python
+def majority(nums):
+    count = 0
+    candidate = None
+    for n in nums:
+        if count == 0:
+            candidate = n
+            count = 1
+        elif n == candidate:
+            count += 1   # ✅ 相同 → 计数 +1
+        else:
+            count -= 1   # ✅ 不同 → 计数 -1
+    return candidate
+```
+
+## 原因解释
+
+这是 **Boyer-Moore 投票算法**，核心思想是"正负抵消"：
+
+| 情况 | 正确操作 | 直觉 |
+|---|---|---|
+| `n == candidate` | `count += 1` | 同一阵营，票数 +1 |
+| `n != candidate` | `count -= 1` | 对立阵营，一票抵消 |
+
+原代码把两个分支的操作**互换**了，导致：
+
+- 遇到相同元素时计数反而减少，候选很快被"淘汰"；
+- 遇到不同元素时计数反而增加，噪声被当作支持。
+
+最终 `candidate` 几乎随机，结果完全错误。
+
+## 补充：严格正确性
+
+Boyer-Moore 投票只能给出**候选**，若输入**不保证**存在多数元素，还需一次遍历验证：
+
+```python
+def majority(nums):
+    # 第一遍：投票
+    count = 0
+    candidate = None
+    for n in nums:
+        if count == 0:
+            candidate = n
+            count = 1
+        elif n == candidate:
+            count += 1
+        else:
+            count -= 1
+
+    # 第二遍：验证（可选，视题目是否保证存在多数元素）
+    if nums.count(candidate) > len(nums) // 2:
+        return candidate
+    return None  # 不存在多数元素
+```
+
+> 若题目已保证多数元素一定存在，省略第二遍即可，核心 bug 就是上面那两行 `+=` / `-=` 写反。

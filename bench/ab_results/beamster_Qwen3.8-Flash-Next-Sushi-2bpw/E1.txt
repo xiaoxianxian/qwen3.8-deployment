@@ -1,0 +1,1 @@
+{"title":"登录页在 Safari 上点击登录按钮无响应","priority":"high","steps":["使用 Safari 浏览器打开登录页面","输入正确的用户名和密码","点击登录按钮","观察按钮无响应，未触发登录请求"],"fix":"排查 Safari 兼容性问题：1. 检查按钮事件绑定是否使用了 Safari 不支持的 API（如 pointer-events 或 passive 事件）；2. 确认 CSS 中是否存在 -webkit- 前缀缺失导致按钮被遮挡或禁用；3. 检查 JavaScript 中是否使用了 Safari 不支持的语法（如可选链 ?. 或空值合并 ??），需添加 polyfill 或降级处理；4. 验证表单提交是否因 Safari 的 CSP 策略被拦截，调整响应头配置。"}

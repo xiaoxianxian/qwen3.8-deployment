@@ -1,0 +1,133 @@
+```python
+# lru_cache.py
+import threading
+from collections import OrderedDict
+
+
+class LRUCache:
+    def __init__(self, capacity: int):
+        self.capacity = capacity
+        self._cache = OrderedDict()
+        self._lock = threading.Lock()
+
+    def get(self, key):
+        with self._lock:
+            if key not in self._cache:
+                return -1
+            self._cache.move_to_end(key)
+            return self._cache[key]
+
+    def put(self, key, value):
+        with self._lock:
+            if key in self._cache:
+                self._cache.move_to_end(key)
+                self._cache[key] = value
+            else:
+                self._cache[key] = value
+                if len(self._cache) > self.capacity:
+                    self._cache.popitem(last=False)
+```
+
+```python
+# test_lru_cache.py
+import threading
+import pytest
+from lru_cache import LRUCache
+
+
+class TestBasicReadWrite:
+    def test_put_and_get(self):
+        cache = LRUCache(2)
+        cache.put(1, 100)
+        cache.put(2, 200)
+        assert cache.get(1) == 100
+        assert cache.get(2) == 200
+
+    def test_get_miss(self):
+        cache = LRUCache(2)
+        assert cache.get(999) == -1
+
+    def test_update_existing(self):
+        cache = LRUCache(2)
+        cache.put(1, 100)
+        cache.put(1, 200)
+        assert cache.get(1) == 200
+
+
+class TestEviction:
+    def test_capacity_eviction(self):
+        cache = LRUCache(2)
+        cache.put(1, 100)
+        cache.put(2, 200)
+        cache.put(3, 300)  # 淘汰 key=1
+        assert cache.get(1) == -1
+        assert cache.get(2) == 200
+        assert cache.get(3) == 300
+
+    def test_lru_order_respected(self):
+        cache = LRUCache(2)
+        cache.put(1, 100)
+        cache.put(2, 200)
+        cache.get(1)       # 1 变为最近使用
+        cache.put(3, 300)  # 淘汰 key=2
+        assert cache.get(2) == -1
+        assert cache.get(1) == 100
+        assert cache.get(3) == 300
+
+
+class TestConcurrency:
+    def test_concurrent_put_get(self):
+        cache = LRUCache(100)
+        errors = []
+        barrier = threading.Barrier(10)
+
+        def worker(thread_id):
+            try:
+                barrier.wait()
+                for i in range(100):
+                    key = thread_id * 100 + i
+                    cache.put(key, key * 10)
+                    val = cache.get(key)
+                    if val != key * 10:
+                        errors.append(f"thread {thread_id}: expected {key*10}, got {val}")
+            except Exception as e:
+                errors.append(str(e))
+
+        threads = [threading.Thread(target=worker, args=(t,)) for t in range(10)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        assert errors == []
+
+    def test_concurrent_no_corruption(self):
+        cache = LRUCache(50)
+        results = {}
+        lock = threading.Lock()
+
+        def writer(thread_id):
+            for i in range(200):
+                key = i
+                cache.put(key, thread_id)
+
+        def reader(thread_id):
+            for i in range(200):
+                val = cache.get(i)
+                if val != -1:
+                    with lock:
+                        results[i] = val
+
+        threads = []
+        for t in range(5):
+            threads.append(threading.Thread(target=writer, args=(t,)))
+            threads.append(threading.Thread(target=reader, args=(t,)))
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        # 验证 cache 内部状态一致：所有 key 的值都在 [0,4] 范围内
+        for key, val in results.items():
+            assert 0 <= val <= 4
+```
