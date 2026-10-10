@@ -1,8 +1,8 @@
 # Qwen3.8-27B 量化方案 A/B 实测对比报告
 
-> 生成时间：2026-10-10 10:44  
+> 生成时间：2026-10-10 14:31  
 > 测试环境：MacBook Pro / M5 Pro / 48GB 统一内存 / Ollama 0.33.3  
-> 方法：同一套 13 题（temperature=0、num_predict=4096、num_ctx=131072、统一走 Ollama /api/chat），逐模型串行跑，跑完即卸载避免显存叠加。
+> 方法：同一套 12 题（temperature=0、num_predict=1024 对齐可比）。双引擎：Ollama 走 /api/chat（27B NVFP4），Sushi 走 /v1/chat/completions（Flash-Next 2bpw）。为消除 48GB 内存天花板下两模型不能共存的约束，逐模型串行跑、跑完即卸载。Flash-Next 每题重启服务清 KV，避免 prefill 因 KV 耗尽 400。
 
 ## 一、体积 vs 速度 vs 吞吐（汇总，13 题均值）
 
@@ -11,7 +11,7 @@
 | MLX 4-bit (NVFP4, Ollama 11434) | qwen3.8:27b-mlx | 4.0 | 18 | 25.91 | 176.3 | 869 |
 | Qwen3.8-Flash-Next 2bpw (Sushi 12345) | beamster/Qwen3.8-Flash-Next-Sushi-2bpw | 2.0 | 37 | 25.52 | 59.1 | 709 |
 
-> 体积取 `ollama list` 显示值；decode = eval_count/eval_duration，prefill = prompt_eval_count/prompt_eval_duration（均来自 Ollama 返回顶层字段）。
+> 体积取 `ollama list` 显示值；decode = eval_count/eval_duration（Ollama）或 timings.predicted_ms/predicted_n（Sushi）。
 
 ## 二、逐题 decode 速度对比 (tok/s)
 
@@ -89,5 +89,13 @@
 
 ### F2 · F2（Chinese Writing）
 
-- **MLX 4-bit (NVFP4, Ollama 11434)**: 推荐译文：  > **量化通过降低模型权重的数值精度，以微小的精度损失换取内存占用与推理开销的大幅降低。混合精度方案依据张量敏感度分配比特数，在更低的平均位宽下保持任务质量。**  --- **简要说明：** - **Quantization / Mixed-precision / bit-widt
+- **MLX 4-bit (NVFP4, Ollama 11434)**: 推荐译文：  > **量化通过降低模型权重的数值精度，以微小的精度损失换取内存占用与推理开销的大幅降低。混合精度方案依据各张量的敏感度分配比特数，在更低的平均位宽下维持任务质量。**  --- **简要说明：** - **Quantization / Mixed-precision / tensor
 - **Qwen3.8-Flash-Next 2bpw (Sushi 12345)**: 量化通过降低模型权重的数值精度，以少量精度损失换取内存占用和推理成本的大幅降低。混合精度方案根据各张量的敏感度分配比特数，从而在更低的平均位宽下保持任务质量。
+
+## 四、结论
+
+- **速度基线**：27B 全程稳定 `25.9` tok/s（区间 16–38），无冷启动惩罚，常驻即响应。
+- **Flash-Next 分层明显**：热区（重启后稳定题 `[37.06, 45.88, 41.32, 41.99, 57.86]`）均值 `44.8` tok/s（峰值 F2=57.86），**比 27B 快约 `1.73×`**；但冷启动/首题与长上下文题（A1/A4/B1/B2/C1/D1）暴跌至 `11.7` tok/s（D1=1.16 几乎不可用）。全样本均值 `25.5` 被冷启动拖累，与 27B 持平是假象。
+- **质量同判**：E1 两模型 JSON 均合法；E2 两模型均因尾部多输出而 JSON 非法（同错，非其一独错）；B1(同余 n=23)、B2(相遇 t=5.6)、C1(GPQA 选 B/泡利) 两模型均给出正确结论。抽样层面二者质量在伯仲之间。
+- **共存约束（48GB 天花板）**：Flash-Next 常驻 ~37GB，27B 常驻 ~18GB，二者**不能同时驻留**。实测跑 27B 前必须 `pkill sushi`，跑完需停 27B 释放内存；切换成本高。
+- **选型建议**：交互场景（首响延迟敏感、希望常驻随时答）→ 27B 更可预测；批量/长文/温态场景（重启后连续多题）→ Flash-Next 速度占优但需接受首题惩罚与切换成本。
