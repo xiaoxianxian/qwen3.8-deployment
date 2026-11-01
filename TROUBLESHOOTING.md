@@ -16,12 +16,13 @@ title: 踩坑排查手册
 | MLX 推理大上下文时报 500 + `context canceled` | [2](#2-mlx-超时-500-context-canceled) |
 | 设了 `OLLAMA_LLM_LIBRARY=mlx` 想让 GGUF 走 MLX，没效果 | [3](#3-gguf-无法走-mlx-引擎) |
 | 发图报 `400 ... No data iterator found for token: <|video_pad|>` | [4](#4-图片识别-400no-data-iterator) |
-| 速度不达预期，日志显示 `specu: no` | [5](#5-mtp-投机解码默认关闭) |
+| 速度不达预期，日志显示 `specu: no` | [5](#5-mtp-投机解码gguf-手动开--mlx-040-已自适应) |
 | 设了 keep_alive，每次调用仍要等冷启动 | [6](#6-keep_alive-对--v1-端点不生效) |
 | `curl localhost:11434` 通，但程序连接失败 | [7](#7-localhost-代理与-ipv6-陷阱) |
 | 调用成功但回复内容为空 | [8](#8-回复内容为空) |
 | 响应慢（整句蹦出，一个字一个字往外挤变慢） | [9](#9-响应速度慢) |
-| 系统更新后 Ollama MLX 版全挂（探针 0 字节 / 每请求 2-5 分钟），小 GGUF 正常 | [10](#10-macos-27-系统更新后-ollama-mlx-runner-卡死) |
+| 系统更新后全挂（探针 0 字节 / 每请求 2-5 分钟 / 模型加载不上） | [10](#10-卡死--模型加载不上--每请求几分钟含-macos-27-后集中爆发的那次) |
+| 模型突然从 `ollama list` 消失、权重凭空少了 18 GB | [11](#11-高危模型突然从-ollama-list-消失旧版二进制启动-gc-清库) |
 
 ---
 
@@ -31,14 +32,27 @@ title: 踩坑排查手册
 
 **根因**：模型支持 262K 上下文，但 Ollama 默认值只有 4096。超过部分被**静默截断**——不报错，只是模型"看不见"后面的内容。
 
-**解决**：全局设置并重启 Ollama：
+**解决**：先分清「谁的设置说了算」：
+
+| 谁设的 | 优先级 |
+|---|---|
+| Ollama.app GUI「设置」→ `db.sqlite` 的 `settings.context_length` | **最高**，会覆盖 Modelfile |
+| Modelfile / 请求体里的 `num_ctx` | 次之 |
+| `OLLAMA_CONTEXT_LENGTH` 环境变量 | 再之（且 `launchctl setenv` 重启即丢） |
 
 ```bash
-launchctl setenv OLLAMA_CONTEXT_LENGTH 131072
-pkill -f "ollama serve" && sleep 2 && open -a Ollama
+# 1. 先看 GUI 里实际是多少（改它必须先完全退出 Ollama.app）
+sqlite3 "file:$HOME/Library/Application Support/Ollama/db.sqlite?mode=ro" \
+  "select context_length from settings;"
+
+# 2. 按机器内存选值：48 GB 用 32768；≥64 GB 才考虑 131072
+#    （262144 在 48 GB 上必然 evict，见第 10 节）
+
+# 3. 校验：CONTEXT 列应与设定一致
+ollama ps
 ```
 
-验证：`ollama show qwen3.8:27b-mlx` 应输出 `num_ctx 131072`（或 Modelfile 中 `PARAMETER num_ctx 131072`）。
+⚠️ **别照着 128K 宣传值直接设 131072 就以为万事大吉**：窗口是容量上限，不是速度。本机预填充 348–383 tok/s，32K prompt 光读入就要 88 秒（见第 9 节换算表）。日常 32768 足够。
 
 ---
 
@@ -79,13 +93,27 @@ MLX 原生版（`qwen3.8:27b-mlx`）自带视觉投影，无需此步骤。
 
 ---
 
-## 5. MTP 投机解码默认关闭
+## 5. MTP 投机解码（GGUF 手动开 / MLX 0.40+ 已自适应）
 
 **现象**：速度不达预期。`ollama show` 或服务日志显示 `specu: no`。
 
-**根因**：Qwen3.8 自带 MTP 投机解码头，但 GGUF 与 MLX 两条路**默认都是 `draft_num_predict=0`（关）**，需要显式开启。
+**先看你在哪条路上，这两条路的结论相反：**
 
-**解决**：Modelfile 中设置：
+| 路线 | 结论 |
+|------|------|
+| **GGUF**（Q5 / GSQ IQ3，llama.cpp 引擎） | MTP **默认关**，需要手动开 `PARAMETER draft_num_predict 3` |
+| **MLX 原生**（`qwen3.8:27b-mlx`，Ollama **0.40+**） | **已默认自适应投机解码，不要手动加** |
+
+⚠️ **MLX 路线手动加 `draft_num_predict` 会变慢**。本机 0.40.11 对拍（同 prompt、200 token 代码生成）：
+
+| 配置 | 解码速度 |
+|---|---|
+| 官方标签原样 | **34.9 tok/s** |
+| 手动 `PARAMETER draft_num_predict 3` | 28.0 tok/s（−20%） |
+
+原因：0.40 的 MLX runner 会自己调 draft 深度与接受率，从外部钉死反而干扰。旧 Modelfile 里那条 `draft_num_predict 3` 是 0.33 时代的遗留，**在 0.40+ 的 MLX 上已经过时**。
+
+**GGUF 路线的做法**：Modelfile 中设置：
 
 ```dockerfile
 PARAMETER draft_num_predict 3
@@ -147,51 +175,90 @@ launchctl setenv OLLAMA_KEEP_ALIVE 30m
 
 ## 9. 响应速度慢
 
-**排查顺序**：
+**排查顺序（按"先算账、再查配置"的顺序，别一上来调参）**：
 
 ```bash
-# 1. 确认模型常驻（避免冷启动）
+# 1. 先算清这次请求要读多少 token —— 决定等待时间的最大变量
+#    看响应里的 usage.prompt_tokens，或服务端日志的 prompt_eval_count
+grep -oE "prompt_eval_count[^,}]*" ~/.ollama/logs/server.log | tail -3
+
+# 2. 确认模型常驻（避免冷启动）
 ollama ps
 
-# 2. 检查是否触发 swap（有用量说明内存不够，会出现分钟级首 token 延迟）
+# 3. 检查是否触发 swap（有用量说明内存不够，会出现分钟级首 token 延迟）
 sysctl vm.swapusage
 
-# 3. 确认 MTP 已开启（见第 5 节）
+# 4. MLX 路线别查 specu（0.40+ 自适应），GGUF 路线才需要（见第 5 节）
 grep "specu" ~/.ollama/logs/server.log | tail
 ```
 
-内存紧张的缓解手段：下调 `num_ctx`（131072 → 65536），或换更小量化档（Q4_K_M）。
+**预填充是 27B 在这类机器上的真实上限，先认清这张表再谈优化**（M5 Pro 48GB 实测 348–383 tok/s，已到 GPU 算力上限）：
+
+| 单轮 prompt | 光读入耗时 |
+|---|---|
+| 2 K | ~6 s |
+| 4 K | ~14 s |
+| 10 K | ~29 s |
+| 32 K | ~88 s |
+| 78 K | ~217 s |
+
+⇒ **读长文档慢，不是引擎的问题，是 token 数 × 单 token 成本。** 想快只有一个方向：把单轮 token 数降下来（分块读取、限制历史回填、裁剪工具输出）。
+
+内存紧张的缓解手段：下调 `num_ctx`（131072 → **32768**，48 GB 机器的日常档），或换更小量化档（IQ3_S / Q4_K_M）。注意 `num_ctx` 是**容量**旋钮，不是速度旋钮——它不改变单 token 成本，只决定装不装得下。
 
 ---
 
-## 10. macOS 27 系统更新后 Ollama MLX runner 卡死
+## 10. 卡死 / 模型加载不上 / 每请求几分钟（含 macOS 27 后集中爆发的那次）
 
-**现象**：系统自动更新（macOS 27.x 点版本）+ 重启完成后，本地 `qwen3.8:27b-mlx` 全挂：探针 0 字节，或每请求 2-5 分钟；客户端报 `Provider has been unresponsive ... stale attempts`。注意 `/api/version` 秒回、`/api/ps` 显示模型已加载**都不证明推理活着**，必须实测一次 chat 探针下结论。
+**现象**：本地 `qwen3.8:27b-mlx` 探针 0 字节，或每请求 2–5 分钟；客户端报 `Provider has been unresponsive ... stale attempts`。
+注意 `/api/version` 秒回、`/api/ps` 显示模型已加载**都不证明推理活着**，必须实测一次 chat 探针下结论。
 
 **判定链（照序做，哪步通了就停）**：
 
-1. **先排除 swap**：`sysctl vm.swapusage`——打满（free 个位数 GB）就先杀大户进程 / 重启清空，再复测；重启清完仍 0 字节才进第 2 步。
-2. **引擎隔离（关键一步）**：清重启 Ollama（`pkill -f Ollama && open -a Ollama`）后，测同机走 llama.cpp/Metal 引擎的小 GGUF 模型（1-4B 档，现成没有就 pull 一个）。**测前必须清重启**——27b MLX runner 还占着 GPU、runner 串行时小模型会排在爬行后面，第一次测必假阳性。
-   - 小模型正常 + 27b-mlx 卡 = **只坏 Ollama MLX runner，系统 Metal 没全挂** → 版本线整条排除、sysctl 线（27.2 起）排除，直接上第 4 步 MTPLX 顶替。
-   - 小模型也慢 = 系统层 Metal 问题，先取证：`softwareupdate --history` + `last reboot` 对时间（重启落在某次 OS 更新装完后几分钟内 = 这次更新完成时 Metal 运行时回归高度可疑）。
-3. **日志指纹**（前台起 `ollama serve` 看，Ollama.app 会吞掉 runner 的 stderr）：`MLX engine initialized` + `Loaded tensors` 正常，但 `Prompt processing progress` 几百 tok/s 爬行 + GIN 500 = 推理层被 GPU 层拖死；`prefix_cache.go` 的 `cache miss total=N matched=M` 行——**total 逐请求增长（数万且越滚越大）+ matched 占比 <1% = 病态重放 prefill**（前缀缓存子系统整个失效，每请求重算全池，单请求 2-5 分钟）。别去反推「total 数万 token 的 prompt 是哪来的」，它不是 prompt 长度。
-4. **版本隔离（可选，确认 Ollama 无责后省时间）**：旧版 Ollama DMG 复测，新旧同病 = 根因不在 Ollama 版本；`sudo sysctl iogpu.disable_wired_collector=1` 在 **macOS 27.2 起已实测无效**（27.0/27.1 老事件仍可试，验证标准 = 重启 Ollama 后第 2 次探针秒级出 token），别再在这条线上花时间。
+1. **先看内存和有谁在抢显存，别先怀疑引擎**。
+   `sysctl vm.swapusage` + `memory_pressure` + `ps aux | sort -k3 -nr | head`。
+   - swap 打满（free 个位数 GB）→ 先杀大户进程 / 重启清空，再复测。
+   - **如果还有第二个推理引擎在跑**（MTPLX / 另一份 ollama / 别的 27B 服务），它不是无关进程，它就是主因：48 GB 装不下两份 27B，两边一起被拖进 swap。
+2. **核对真实上下文值**（不是 Modelfile 里写的那个）：
+   ```bash
+   sqlite3 "file:$HOME/Library/Application Support/Ollama/db.sqlite?mode=ro" "select context_length from settings;"
+   ```
+   - Ollama.app 的 GUI 设置**优先级高于** Modelfile 的 `num_ctx`，改了 Modelfile 不生效是常态。
+   - 262144 在 48 GB 上必失败。决定性日志判据：
+     `predicted="24.8 GiB" predicted_num_ctx=262144 available="11.9 GiB" system_limited=true` → `evicting`
+     也就是「模型反复被驱逐、永远加载不上」，表现就是点了没反应。
+   - 改它必须**完全退出 Ollama.app**（GUI 会写回旧值），改完看 `ollama ps` 的 `CONTEXT` 列校验。
+3. **核对单轮 prompt 有多大**（最常被忽略的一环）：看响应 `usage.prompt_tokens`，或日志里 `prompt_eval_count`。
+   - 本机预填充只有 **348–383 tok/s**，已到 M5 Pro GPU 算力上限（27B 稠密模型每 token ≈ 2×27 GFLOPs，×360 tok/s ≈ 19 TFLOPS）。换算：10 K → 29 s，32 K → 88 s，**78 K → 217 s**。
+   - 所以「卡几分钟」很多时候根本不是引擎卡，是**在等 prefill**。数值是数万级时，先修上游（历史回填上限 / 单文件读取上限 / 工具输出上限），再谈引擎。
+4. **最后才查引擎与版本**：
+   - 引擎层确实有一个真 bug：Ollama [#18744](https://github.com/ollama/ollama/issues/18744)「MLX engine: weights are unwired ~2 s after each request on macOS 27」，根因在 [mlx#4609](https://github.com/ml-explore/mlx/issues/4609)——`requestResidency()` 只发一次、之后从不续租，macOS 约 2 秒后回收。**它的代价是「空闲后首个请求多约 3 秒」，不是分钟级**，量级上解释不了 2–5 分钟。
+   - 修复已编进 **0.40.11**（上游 mlx#4633，暴露成 `MLX_METAL_RESIDENCY_REFRESH_INTERVAL_MS`；`strings /usr/local/bin/ollama` 与 `Ollama.app/Contents/Resources/mlx_metal_v{3,4}/libmlx.dylib` 里都能查到），**不需要等新版本**。
+   - 缓解：`sudo sysctl iogpu.disable_wired_collector=1`（重启失效）。本机 11-02 复测：该值 =1 时空闲 60 s 后首请求 **0.46 s**。
+     ⚠️ 该开关在 macOS 27.2 上是否仍有效，本轮**没做 A/B 对照**，别把它当唯一根因（本机它一直是 1，事故照样发生）。
 
-**顶替：MTPLX 引擎（同权重、独立引擎，实测不受 Ollama runner 缓存病影响）**：
+### 为什么 11-01 那版判断错了（保留作反面教材）
 
-```bash
-# 起 MTPLX（OpenAI 兼容端点 8000）
-<你的-mtplx-venv>/bin/mtplx serve --model Youssofal/Qwen3.8-27B-MTPLX-Optimized-Speed --port 8000
-# ready 判定轮询 /health（{"ok":true,...}），别 grep 启动日志（日志提前打 ready 但端口没监听）
-```
+11-01 本页曾把根因判为「Ollama MLX runner 病态」，并给出「换 MTPLX 引擎顶替」的方案。11-02 复核推翻，错在四处推理跳跃：
 
-- 端点 `http://127.0.0.1:8000/v1`，model id `mtplx-qwen38-27b-optimized-speed`。
-- **两引擎绝不同跑**（Ollama 27b ~34GB 常驻 + MTPLX peak ~23GB > 48GB）：起 MTPLX 前把 Ollama 全停（含 app 的 serve 子进程）；回 Ollama 时 `pkill -f 'mtplx serve'`（杀不掉就 `lsof -nP -iTCP:8000 -sTCP:LISTEN -t | xargs kill -9`）再 `open -a Ollama`。
-- 思考开关（11-01 实测，现行版本支持）：服务端 `mtplx serve --reasoning off`（默认关，agent 任务免思考税、直接动手）+ 请求级 `enable_thinking: true` 按需开思考。思考进 `reasoning_content`，**正文仍在 `content`**，OpenAI 形态客户端读 content 正常。
-- 验收基线（M5 Pro 48GB 对拍值）：Ollama 档 ttft 0.17s / ~27-30 tok/s；MTPLX 档 ttft ~1.1s / ~23 tok/s。MTPLX 短探针 e2e ~2s、decode ≥20 tok/s = 顶替到位。
-- 要重启自动拉起：挂 LaunchAgent（Label `com.user.mtplx`、RunAtLoad + KeepAlive，ProgramArguments 指 mtplx venv 的 `mtplx serve --model ... --port 8000 --reasoning off`（思考开关见上条），日志写 `~/models/mtplx_serve.{out,err}.log`），`launchctl load` 后 `launchctl list | grep mtplx` 验。
+| 当时的推断 | 实际事实 |
+|---|---|
+| 小 GGUF 正常 + 27b-mlx 卡 ⇒ 只坏了 27B 的 MLX runner | 当时 MTPLX 正占着 40.6 GB，可用只剩 11.9 GB。小模型装得下、27B@262144 要 24.8 GiB 装不下 ⇒ **这是"大的装不进去"，不是"引擎坏了"** |
+| `cache miss total` 逐请求增长、命中 0.4% ⇒ 前缀缓存子系统失效 | 那个 `total` **就是 prompt 长度本身**。会话在增长、每轮 prompt 从 3.6 万涨到 7.4 万 token，前缀对不上自然命中低。**"别去反推 prompt 是哪来的"这个结论恰好把唯一的主因排除掉了** |
+| 三个 0.40.x 版本同病 ⇒ 排除版本线 | 版本线确实可排除，但排除它不等于根因在引擎——**三个版本共享同一个 262144 配置和同一个内存挤爆的环境** |
+| MTPLX 同机 1.7 s / 28 tok/s 正常 ⇒ MTPLX 是解药 | 那是**独占内存**跑出来的（Ollama 已停）。同 workload 下 MTPLX 本来就比 Ollama 慢约 14%，而且它底层同样是 MLX，同样吃 #18744 |
 
-**2026-11-01 事件实录（M5 Pro 48GB / macOS 27.2 可对照）**：0.40.13 / 0.40.12 / 0.40.11 三版本 300s 探针全零字节 → 版本线排除；`qwen3:4b`（GGUF）14s 正常 → 病在 Ollama MLX runner；serve 日志 prefill 池 36k→74k 逐请求增长、`cache miss total=74246 matched=287`（命中 0.4%）；sysctl 无效；MTPLX 同机 1.7s 出「收到」/ ~28 tok/s 正常 → 切 MTPLX（LaunchAgent 常驻）、Ollama 保持停。待 Ollama 后续版本或 27.2.x 修复后：Ollama 重启 + 探针验收 → 停 MTPLX → 端点切回，并更新本页与 `CURRENT_CONFIG.md`。
+**教训**：做「引擎隔离实验」时，必须先把另一个引擎停掉并确认内存干净，否则测出来的差异是**内存配额差异**，不是引擎能力差异。
+
+### 被推翻的「顶替方案」
+
+本页曾推荐装 MTPLX 顶替 Ollama。**不要这样做**，三个原因：
+
+1. **同源**：MTPLX 也是 MLX 后端，同样的 residency 问题一个不落。
+2. **更慢**：同 workload 对拍 −14%（见 `MTPLX引擎实测-vs-Ollama.md`，那份 10-03 的报告结论本来就是「日常用 Ollama，不推荐换」）。
+3. **更危险**：`--allow-swap` 让它的峰值冲到 **74 GB**（机器只有 48 GB），日志出现 `system_thrashing: true` 与反复 `prefill_admission_shed` / `allocation_failure_shed`，端到端掉到 1.6 tok/s。反而把机器按死。
+
+真正修好这台机器的是三件事，与引擎无关：**停掉第二个引擎** + **上下文 262144 → 32768** + **把单轮 prompt 从 7.8 万降到 1 万以内**。改完同一个模型回到 23–35 tok/s，冷启 2.5–6 s。
 
 ---
 
@@ -201,6 +268,58 @@ MLX 单跑极稳：131072 上下文 + MTP 下，5 维质量题 2 轮 10/10 全�
 
 **部署建议**：
 
-- 日常单跑 / 短中交互：`qwen3.8:27b-mlx`（MLX，满血 131k + MTP）
+- 日常单跑 / 短中交互：`qwen3.8:27b-mlx`（MLX），**48 GB 机器把窗口压在 32768**；≥64 GB 才建议 131072
 - 长 agent 多会话并发：`qwen3.8-q5`（GGUF + llama.cpp，并发更稳）；GSQ IQ3 同为 llama.cpp 路径，并发表现与 Q5 一致，只是更省显存、速度更慢
 - 避免多个客户端同时并发调同一个 MLX 模型，错峰使用
+
+> ⚠️ **上文的「131072 零 OOM」只证明装得下，不证明跑得快。** 131072 是容量上限，真实等待时间由 prompt token 数决定（本机 348–383 tok/s 预填充，见第 9 节换算表）。48 GB 机器日常用 32768，别把 131K 当默认值抄进配置。
+
+## 11. 【高危】模型突然从 `ollama list` 消失（旧版二进制启动 GC 清库）
+
+**症状**
+`ollama list` 只剩个别模型，其余全没了；`~/.ollama/models` 体积骤降；服务日志反复刷
+`msg="bad manifest" ... error="lstat .../blobs/sha256-xxx: no such file or directory"`。
+
+**根因**
+用**别的版本**的 ollama 二进制（比如为做对照而解压的旧版）启动 `serve`，且**沿用了默认模型目录**：
+
+```bash
+# ❌ 危险：旧版会拿 ~/.ollama/models，并在启动时跑 GC
+OLLAMA_HOST=127.0.0.1:11435 ./Ollama.app/Contents/Resources/ollama serve
+```
+
+旧版只认老式 manifest 布局（`manifests/registry.ollama.ai/...`）。
+而 Ollama 0.40+ 改用新布局：`manifests-v2/ollama.com/library/<model>/<tag>`，**manifest 本身是指向 blobs 的符号链接**。
+旧版看不见新布局 → 把新版模型的 blob 全判成"未使用"→ 启动时直接删：
+
+```text
+total blobs: 1217
+total unused blobs removed: 1212     # 一次启动清掉 18GB 权重
+```
+
+**如何取证（判断是不是这个原因）**
+
+```bash
+# 1. 看服务日志有没有 bad manifest
+grep "bad manifest" ~/.ollama/logs/server.log | tail -3
+
+# 2. 找旧版二进制留下的启动记录：PROBE 日志里会有 total unused blobs removed
+grep -r "unused blobs removed" /tmp/ollama*/  2>/dev/null
+
+# 3. 对照 blobs 目录的 mtime 与"嫌疑命令"的执行时间，通常精确到秒
+stat -f "%Sm %N" -t "%F %T" ~/.ollama/models/blobs
+```
+
+**正确姿势（跨版本测试必须隔离）**
+
+```bash
+export OLLAMA_MODELS=/tmp/ollama-probe-$$/models   # 独立空目录，绝不共用
+export OLLAMA_NOPRUNE=1                            # 关掉启动 GC
+OLLAMA_HOST=127.0.0.1:11435 /path/to/old/ollama serve
+```
+
+只想看版本号就别起 `serve` —— 直接 `/path/to/old/ollama --version`，不会碰模型库。
+
+**恢复**
+重新 `ollama pull <model>:<tag>`。注意 Ollama 0.40 的 manifest 是软链，删了 blob 后
+`ollama list` 不报错、只是模型静默消失，别以为"权重还在"。

@@ -7,8 +7,13 @@ title: 完整部署方案
 
 面向 macOS Apple Silicon 用户的本地大模型部署教程：基于 M5 Pro / 48GB 实测，覆盖 Ollama + MLX 与 GGUF 量化方案对比、MTP 投机解码加速、国内镜像下载与完整避坑。
 
-> **最后验证：2026-09-15** · Ollama 0.33.3 · macOS 26（M5 Pro / 48GB 实测）
+> **最后验证：2026-11-02** · Ollama 0.40.11 · macOS 27.2（M5 Pro / 48GB 实测）
 > 适用版本：**Ollama ≥ 0.30**。更早版本存在 MLX 大上下文超时 bug（[问题 2](./TROUBLESHOOTING.md#2-mlx-超时-500-context-canceled)），动手前先确认版本。
+>
+> **0.40 起有三处行为变化，照更早的教程抄会踩坑**（2026-11-02 实测）：
+> ① 上下文长度的**真正开关是 Ollama.app 的设置**（`db.sqlite` 里的 `settings.context_length`），优先级**高于** Modelfile 的 `num_ctx`——改 Modelfile 不生效是常态；
+> ② MLX 路线**不要再手写 `draft_num_predict`**，0.40 已自适应投机解码，手动指定反而从 34.9 掉到 28.0 tok/s（[问题 5](./TROUBLESHOOTING.md#5-mtp-投机解码gguf-手动开--mlx-040-已自适应)）；
+> ③ 48 GB 机器**别把 262144 抄进配置**，必然触发 evict（模型反复被驱逐、永远加载不上）。日常用 32768。
 
 ## 适用对象
 
@@ -49,7 +54,7 @@ title: 完整部署方案
 | GSQ IQ3_S | ~12 GB | ~13 GB | 基本无损 | 省内存均衡（见下） |
 | GSQ IQ3_XXS | ~10 GB | ~11 GB | GPQA ~-1 分 | 极致省显存 |
 
-### 四模型性能总表（M5 Pro 48GB，num_ctx=131072）
+### 四模型性能总表（M5 Pro 48GB，测量口径 num_ctx=131072）
 
 | 模型 | 量化 | 体积 | 早期短基准·代码生成¹ | 严格 12 题·平均 decode² | 12 题质量 | 内存占用 |
 |------|------|------|--------------------|------------------------|----------|---------|
@@ -62,7 +67,7 @@ title: 完整部署方案
 ² 严格 12 题 A/B：temperature=0、12 题统一对照、四模型均开 MTP、串行跑完即卸载，更可控。两种测法口径不同，倍数不能直接相除，仅作量级参考。
 补充：首 token 延迟均 3-4 秒（常驻）；图片理解 MLX ~17s / Q5 ~24s（GGUF 需挂 mmproj）。
 
-> **MLX 原生版（qwen3.8:27b-mlx）** 是当前最优选择：速度快约 2 倍，首字延迟秒级。MTP 投机解码须手动开启（draft_num_predict 3），GGUF 与 MLX 通用，非 MLX 独占。  
+> **MLX 原生版（qwen3.8:27b-mlx）** 是当前最优选择：速度快约 2 倍，首字延迟秒级。**0.40 起 MLX 路线不必手动开 MTP**（runner 已自适应，手写 `draft_num_predict 3` 反而更慢）；只有 GGUF 路线仍需手动设。  
 > 如果追求极致质量且内存充足，可选择 **Q8_K_XL**（8 位量化，几乎无损）。
 
 详细对比请参考：[性能对比与量化指南.md](./性能对比与量化指南.md)
@@ -150,12 +155,14 @@ MLX 原生版 `ollama pull` 后即为可用模型；GGUF（Q5 / GSQ IQ3）路线
 
 ```dockerfile
 FROM qwen3.8:27b-mlx
-PARAMETER num_ctx 131072
-PARAMETER draft_num_predict 3     # MTP 投机解码（Qwen3.8 自带加速）
+PARAMETER num_ctx 32768           # 48GB 机器日常档；≥64GB 才写 131072
+# 不要加 draft_num_predict：0.40+ 的 MLX runner 已自适应投机解码，手写反而更慢
 PARAMETER temperature 0.7
 PARAMETER top_p 0.95
 PARAMETER top_k 20
 ```
+
+> ⚠️ `num_ctx` 写在这里只是「模型默认值」，**Ollama.app 设置里的上下文长度会覆盖它**。以 `ollama ps` 的 `CONTEXT` 列为准。
 
 **GGUF Q5_K_M（FROM Ollama 标签，需补多模态模板 + MTP + 视觉投影）：**
 
@@ -199,31 +206,44 @@ ollama create qwen3.8-q5 -f Modelfile.q5
 ollama create qwen3.8-gsq-iq3s -f Modelfile.gsq
 ```
 
-### 第六步：配置全局环境变量
+### 第六步：设置上下文长度（0.40 起别再用环境变量）
+
+**先认清谁说了算**——这一步 90% 的人会做错：
+
+| 设置位置 | 优先级 |
+|---|---|
+| **Ollama.app「设置」→ `db.sqlite` 的 `settings.context_length`** | **最高，会覆盖下面两项** |
+| Modelfile / 请求体 `num_ctx` | 次之 |
+| `OLLAMA_CONTEXT_LENGTH` 环境变量 | 再次（`launchctl setenv` 重启即丢） |
 
 ```bash
-# macOS 用户级全局配置（Ollama 以用户 LaunchAgent 运行，无需 sudo）
-launchctl setenv OLLAMA_CONTEXT_LENGTH 131072
-launchctl setenv OLLAMA_FLASH_ATTENTION 1
-launchctl setenv OLLAMA_KV_CACHE_TYPE q8_0
-launchctl setenv OLLAMA_KEEP_ALIVE 30m
+# 1. 先查 GUI 里实际是多少
+sqlite3 "file:$HOME/Library/Application Support/Ollama/db.sqlite?mode=ro" \
+  "select context_length from settings;"
 
-# 生效配置：重启 Ollama 使环境变量生效
-pkill -f "ollama serve" && sleep 2 && open -a Ollama
+# 2. 改它必须先「完全退出」Ollama.app（只 pkill serve 不够，GUI 会写回旧值）
+osascript -e 'quit app "Ollama"'
+sqlite3 "$HOME/Library/Application Support/Ollama/db.sqlite" \
+  "update settings set context_length=32768 where id=1;"
+
+# 3. 重启并校验（CONTEXT 列才是实际生效值）
+open -a Ollama && sleep 10 && ollama ps
 ```
 
-**每个变量的作用：**
+**按内存选值**：48 GB → **32768**；32 GB → 16384；≥64 GB 才考虑 131072。**262144 在 48 GB 上必然 evict。**
 
-| 变量 | 作用 | 不设置的后果 |
-|------|------|-------------|
-| `OLLAMA_CONTEXT_LENGTH=131072` | 全局默认 128K 上下文 | 模型退回 4096 默认值，长文档被静默截断 |
-| `OLLAMA_FLASH_ATTENTION=1` | 长上下文推理提速 30–50% | 速度慢 |
-| `OLLAMA_KV_CACHE_TYPE=q8_0` | KV 缓存量化，内存占用减半 | 内存占用高，可能触发 swap |
-| `OLLAMA_KEEP_ALIVE=30m` | 模型驻留内存 30 分钟 | 每次调用等约 6 秒冷启动 |
+> 为什么不是越大越好：窗口是**容量**旋钮，不是**速度**旋钮。本机预填充 348–383 tok/s，32 K prompt 光读入就要 88 秒、78 K 要 217 秒。日常对话和改代码根本用不到 1 万以上。
 
-> KV 缓存：模型生成时为「已处理过的文字」记录的临时存储，上下文越长占用越大。q8_0 把这块也压缩一档，省显存且精度几乎无损。
+**环境变量参考（本机实测大部分没必要设）：**
 
-> `launchctl setenv` 在重启 Mac 后会失效，重启后重跑一遍即可；想一劳永逸，把变量写进 Ollama 的 LaunchAgent plist。
+| 变量 | 作用 | 建议 |
+|------|------|------|
+| `OLLAMA_CONTEXT_LENGTH` | 全局默认上下文 | **不推荐**：被 GUI 设置覆盖，设了也白设 |
+| `OLLAMA_FLASH_ATTENTION=1` | 长上下文提速 | Apple Silicon MLX 路径通常已默认开，非必需 |
+| `OLLAMA_KV_CACHE_TYPE=q8_0` | KV 缓存量化省内存 | **别盲开**：会主动引入 int8 KV 量化（有翻转 token 实测），f16 未压缩更稳 |
+| `OLLAMA_KEEP_ALIVE=30m` | 模型驻留 30 分钟 | 本机冷重载实测仅 2.5–6 s，默认 5 分钟够用 |
+
+> 想让环境变量持久化，`launchctl setenv` 不行（重启即丢）；写 plist 也要注意本机的 `com.ollama.serve.plist` 是 `RunAtLoad=false`，**从未生效**——实际 server 由 Ollama.app 拉起。这也是为什么本机这几个变量实测全为空。
 
 ### 第七步：验证安装
 
@@ -231,8 +251,9 @@ pkill -f "ollama serve" && sleep 2 && open -a Ollama
 # 查看模型信息
 ollama show qwen3.8:27b-mlx
 
-# 确认上下文长度已生效（应输出 131072，不是 4096）
-ollama show qwen3.8:27b-mlx | grep num_ctx
+# 确认上下文长度已生效：看 ollama ps 的 CONTEXT 列（这才是实际生效值）
+# 注意 ollama show 里的 num_ctx 只是模型标签自带值，不等于运行时实际值
+ollama ps
 
 # 测试对话
 ollama run qwen3.8:27b-mlx "你好，简单介绍一下你自己"
@@ -390,7 +411,7 @@ MTPLX 只吃 MLX 档案、Apple Silicon 专用；官方标的 87.6 tok/s 本机�
 > 按现象索引的完整排查手册（9 个常见问题 + 根因 + 修复命令）见 **[TROUBLESHOOTING.md](./TROUBLESHOOTING.md)**，以下为高频简答。
 
 ### Q1: 内存不足怎么办？
-优先保持 `num_ctx 131072`（单跑稳定）；内存吃紧时下调到 65536，仍不足再换更小量化（Q4_K_M）。
+按内存定上下文：**48 GB → 32768，32 GB → 16384**，≥64 GB 才考虑 131072。**不要照 262K 宣传值设**——48 GB 上 262144 必然触发 evict（判定方法见 [问题 10](./TROUBLESHOOTING.md#10-卡死--模型加载不上--每请求几分钟含-macos-27-后集中爆发的那次)）。仍不足再换更小量化（IQ3_S / Q4_K_M），并顺手确认**没有第二个推理引擎在同时跑**。
 
 ### Q2: 生成速度很慢？
 检查是否开启了 Swap，确保模型完全加载到内存。
@@ -402,9 +423,11 @@ MLX 原生版 `qwen3.8:27b-mlx` 自带视觉投影，直接发图即可，无需
 不需要。本地模型完全离线运行，无需联网。
 
 ### Q5: MLX 跑 128K 上下文会爆显存吗？
-单跑不会。2026-09-10 的 A/B 实测中，MLX 在 131072 上下文 + MTP 下 5 维题 2 轮 **10/10 全过、零 OOM**；GSQ / GGUF 路线（Q5、IQ3 等）同属 llama.cpp 引擎，单跑 131K 上下文同样稳定。之前偶发的「间歇性显存溢出」，根因是**多个会话/进程同时调同一个 MLX 模型**，KV 缓存显存叠加——不是 128K 上下文太大。
+单跑不会。2026-09-10 的 A/B 实测中，MLX 在 131072 上下文下 5 维题 2 轮 **10/10 全过、零 OOM**；GSQ / GGUF 路线（Q5、IQ3 等）同属 llama.cpp 引擎，单跑 131K 上下文同样稳定。之前偶发的「间歇性显存溢出」，根因是**多个会话/进程同时调同一个 MLX 模型**，KV 缓存显存叠加——不是 128K 上下文太大。
 
-- 日常单跑 / 短中交互：直接用 `qwen3.8:27b-mlx`（MLX，满血 131k + MTP），最快最稳。
+> ⚠️ **但「不爆」不等于「好用」**（2026-11-02 补充）：131072 是容量上限，真实等待时间由 prompt token 数决定。本机预填充 348–383 tok/s，**32 K prompt 光读入就要 88 秒、78 K 要 217 秒**。48 GB 机器日常请用 **32768**，长文档任务再临时放大。
+
+- 日常单跑 / 短中交互：直接用 `qwen3.8:27b-mlx`（MLX），窗口 32768，最快最稳。
 - 长 agent 多会话并发：改用 `qwen3.8-q5`（GGUF + llama.cpp，并发更稳）；GSQ IQ3 同为 llama.cpp 路径，并发表现与 Q5 一致，但体积更小、速度更慢。
 - 别让 Hermes 与 WorkBuddy 同时并发调 MLX，错峰即可。
 
