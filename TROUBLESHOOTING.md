@@ -187,9 +187,9 @@ grep "specu" ~/.ollama/logs/server.log | tail
 
 - 端点 `http://127.0.0.1:8000/v1`，model id `mtplx-qwen38-27b-optimized-speed`。
 - **两引擎绝不同跑**（Ollama 27b ~34GB 常驻 + MTPLX peak ~23GB > 48GB）：起 MTPLX 前把 Ollama 全停（含 app 的 serve 子进程）；回 Ollama 时 `pkill -f 'mtplx serve'`（杀不掉就 `lsof -nP -iTCP:8000 -sTCP:LISTEN -t | xargs kill -9`）再 `open -a Ollama`。
-- 字段差异：MTPLX 思考关不掉（思考进 `reasoning_content`），但**正文仍在 `content`**，OpenAI 形态客户端读 content 正常。
+- 思考开关（11-01 实测，现行版本支持）：服务端 `mtplx serve --reasoning off`（默认关，agent 任务免思考税、直接动手）+ 请求级 `enable_thinking: true` 按需开思考。思考进 `reasoning_content`，**正文仍在 `content`**，OpenAI 形态客户端读 content 正常。
 - 验收基线（M5 Pro 48GB 对拍值）：Ollama 档 ttft 0.17s / ~27-30 tok/s；MTPLX 档 ttft ~1.1s / ~23 tok/s。MTPLX 短探针 e2e ~2s、decode ≥20 tok/s = 顶替到位。
-- 要重启自动拉起：挂 LaunchAgent（Label `com.user.mtplx`、RunAtLoad + KeepAlive，ProgramArguments 指 mtplx venv 的 `mtplx serve --model ... --port 8000`，日志写 `~/models/mtplx_serve.{out,err}.log`），`launchctl load` 后 `launchctl list | grep mtplx` 验。
+- 要重启自动拉起：挂 LaunchAgent（Label `com.user.mtplx`、RunAtLoad + KeepAlive，ProgramArguments 指 mtplx venv 的 `mtplx serve --model ... --port 8000 --reasoning off`（思考开关见上条），日志写 `~/models/mtplx_serve.{out,err}.log`），`launchctl load` 后 `launchctl list | grep mtplx` 验。
 
 **2026-11-01 事件实录（M5 Pro 48GB / macOS 27.2 可对照）**：0.40.13 / 0.40.12 / 0.40.11 三版本 300s 探针全零字节 → 版本线排除；`qwen3:4b`（GGUF）14s 正常 → 病在 Ollama MLX runner；serve 日志 prefill 池 36k→74k 逐请求增长、`cache miss total=74246 matched=287`（命中 0.4%）；sysctl 无效；MTPLX 同机 1.7s 出「收到」/ ~28 tok/s 正常 → 切 MTPLX（LaunchAgent 常驻）、Ollama 保持停。待 Ollama 后续版本或 27.2.x 修复后：Ollama 重启 + 探针验收 → 停 MTPLX → 端点切回，并更新本页与 `CURRENT_CONFIG.md`。
 
