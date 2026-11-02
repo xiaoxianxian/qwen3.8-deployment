@@ -232,6 +232,8 @@ open -a Ollama && sleep 10 && ollama ps
 
 **按内存选值**：48 GB → **32768**；32 GB → 16384；≥64 GB 才考虑 131072。**262144 在 48 GB 上必然 evict。**
 
+> **例外：客户端有 64K 下限时必须设 65536。** Hermes Agent 把 64K 做成硬门槛（`MINIMUM_CONTEXT_LENGTH = 64_000`），低于它就拒绝启动，报 `below the minimum 64,000 required by Hermes Agent`。这类客户端还要同步改两处：`model.context_length` + `model.ollama_num_ctx`。注意 **`/v1` 端点会忽略请求里的 `num_ctx`**，所以客户端改完服务端窗口仍是旧的——两边都得改。完整排查见 `TROUBLESHOOTING.md` §12。
+
 > 为什么不是越大越好：窗口是**容量**旋钮，不是**速度**旋钮。本机预填充 348–383 tok/s，32 K prompt 光读入就要 88 秒、78 K 要 217 秒。日常对话和改代码根本用不到 1 万以上。
 
 **环境变量参考（本机实测大部分没必要设）：**
@@ -239,11 +241,11 @@ open -a Ollama && sleep 10 && ollama ps
 | 变量 | 作用 | 建议 |
 |------|------|------|
 | `OLLAMA_CONTEXT_LENGTH` | 全局默认上下文 | **不推荐**：被 GUI 设置覆盖，设了也白设 |
-| `OLLAMA_FLASH_ATTENTION=1` | 长上下文提速 | Apple Silicon MLX 路径通常已默认开，非必需 |
-| `OLLAMA_KV_CACHE_TYPE=q8_0` | KV 缓存量化省内存 | **别盲开**：会主动引入 int8 KV 量化（有翻转 token 实测），f16 未压缩更稳 |
+| `OLLAMA_FLASH_ATTENTION=1` | 长上下文提速 | **对 MLX 无效**：该值只传给 llama.cpp 引擎（`llm/server.go` → `NewLlamaServerRunner`），MLX runner 用自己的 attention 实现 |
+| `OLLAMA_KV_CACHE_TYPE=q8_0` | KV 缓存量化省内存 | **对 27B（MLX）无效**：源码里 `kvct` 只进 llama.cpp 路径。对 GGUF 模型实测有效：`qwen3:4b` KV 从 4608 → 2448 MiB |
 | `OLLAMA_KEEP_ALIVE=30m` | 模型驻留 30 分钟 | 本机冷重载实测仅 2.5–6 s，默认 5 分钟够用 |
 
-> 想让环境变量持久化，`launchctl setenv` 不行（重启即丢）；写 plist 也要注意本机的 `com.ollama.serve.plist` 是 `RunAtLoad=false`，**从未生效**——实际 server 由 Ollama.app 拉起。这也是为什么本机这几个变量实测全为空。
+> 想让环境变量持久化，本机**三条路都堵死**（2026-11-02 实测）：`launchctl setenv` 报 `Not privileged`；`launchctl bootstrap`/`load -w`/`submit` 全部 `5: Input/output error`（连最小 `/bin/echo` plist 也失败）；`open --env` 传不到 server 子进程。**能持久生效的只有 GUI 的 `context_length`**。
 
 ### 第七步：验证安装
 

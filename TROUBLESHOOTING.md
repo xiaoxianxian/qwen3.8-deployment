@@ -23,6 +23,7 @@ title: 踩坑排查手册
 | 响应慢（整句蹦出，一个字一个字往外挤变慢） | [9](#9-响应速度慢) |
 | 系统更新后全挂（探针 0 字节 / 每请求 2-5 分钟 / 模型加载不上） | [10](#10-卡死--模型加载不上--每请求几分钟含-macos-27-后集中爆发的那次) |
 | 模型突然从 `ollama list` 消失、权重凭空少了 18 GB | [11](#11-高危模型突然从-ollama-list-消失旧版二进制启动-gc-清库) |
+| 第三方客户端（Hermes）切到本地模型就报错，界面只说"出了点问题" | [12](#12-第三方客户端报-context-window--below-64000hermes-实证) |
 
 ---
 
@@ -323,3 +324,114 @@ OLLAMA_HOST=127.0.0.1:11435 /path/to/old/ollama serve
 **恢复**
 重新 `ollama pull <model>:<tag>`。注意 Ollama 0.40 的 manifest 是软链，删了 blob 后
 `ollama list` 不报错、只是模型静默消失，别以为"权重还在"。
+
+---
+
+## 12. 第三方客户端报 `context window ... below 64,000`（Hermes 实证）
+
+**现象**：Hermes 一切到 `qwen3.8:27b-mlx` 就失败，界面只给一句"出了点问题，技术细节见网关日志"：
+
+```
+── Hermes error details ──
+layer: provider   code: unknown   retryable: true   model: qwen3.8:27b-mlx
+```
+
+`retryable: true` 是障眼法——**重试永远好不了**。真身在 `~/.hermes/logs/errors.log`：
+
+```
+ValueError: Model qwen3.8:27b-mlx has a context window of 32,768 tokens,
+which is below the minimum 64,000 required by Hermes Agent.
+```
+
+### 根因：三层叠加，缺一不可
+
+| 层 | 实际情况 | 证据 |
+|---|---|---|
+| Hermes 硬门槛 | 要求上下文 **≥ 64K**，没有环境变量可绕过 | `agent/model_metadata.py:274` → `MINIMUM_CONTEXT_LENGTH = 64_000` |
+| Hermes 配置把它钉死 | `model.context_length: 32768` 决定压缩器窗口 → 触发地板检查 | `agent/agent_init.py:2054` → `_enforce_minimum_context()` **在建 agent 时就抛错**，根本没到推理 |
+| Ollama 只服务 32K | 服务端窗口由 GUI 设置决定，不是客户端能改的 | `curl localhost:11434/api/ps` → `context_length: 32768` |
+
+> 注意报错文案的误导：它建议"set `model.ollama_num_ctx`"（至少 64K），但**真正触发地板检查的是 `model.context_length`**。两个键都要改，见下面的命令。
+
+### 关键实证：`/v1` 端点不认请求级 `num_ctx`
+
+Hermes 会往 `/v1/chat/completions` 里塞 `options.num_ctx`，**这个字段在 Ollama 的 OpenAI 兼容端点被直接忽略**。对照实验（2026-11-02，同一台机）：
+
+```bash
+# 请求里明确写 num_ctx=65536，看实际加载成多少
+curl -s --noproxy '*' http://127.0.0.1:11434/v1/chat/completions \
+  -H 'Content-Type: application/json' \
+  -d '{"model":"qwen3:4b","messages":[{"role":"user","content":"hi"}],
+       "max_tokens":4,"stream":false,"options":{"num_ctx":65536}}'
+
+curl -s --noproxy '*' http://127.0.0.1:11434/api/ps
+# → qwen3:4b  context_length: 32768   ← 65536 被无视
+```
+
+⇒ **只改客户端配置，报错会消失但服务端还是 32K**，接着撞上截断/空洞回复。真正生效的开关只有 GUI 的 `settings.context_length`（见 §1 与 `CURRENT_CONFIG.md`「上下文由谁决定」）。
+
+### 解决
+
+```bash
+# 1) 服务端（唯一真开关）——必须先完全退出 Ollama.app
+pkill -f "/Applications/Ollama.app"
+#    注意：本机 osascript -e 'quit app "Ollama"' 会报 -10004 权限违例（TCC），用 pkill
+sqlite3 "$HOME/Library/Application Support/Ollama/db.sqlite" \
+  "update settings set context_length=65536 where id=1;"
+open -a Ollama && sleep 10
+curl -s --noproxy '*' http://127.0.0.1:11434/api/ps | grep -o '"context_length":[0-9]*'
+# → "context_length":65536
+
+# 2) 客户端（Hermes）两个键一起改
+hermes config set model.context_length 65536
+hermes config set model.ollama_num_ctx 65536
+```
+
+**验收**（两条都要过）：
+
+```bash
+hermes -m qwen3.8:27b-mlx -z "只回复两个字：正常"     # → 正常
+grep context_pin ~/.hermes/logs/agent.log | tail -1
+# → context_pin: model.context_length pins qwen3.8:27b-mlx at 65,536 tokens ...
+#    （出现这行说明配置已生效；同时 errors.log 不再有新 ValueError）
+```
+
+### 三个踩过的坑
+
+1. **Ollama.app 运行中改 db 会被内存值写回**。实测一次把 65536 顶成了 262144（模型上限）。必须**先退出 app → 改库 → 再启动**。
+2. **`com.ollama.serve.plist` 里的 `OLLAMA_CONTEXT_LENGTH` 是死配置**，该 launchd 服务从未被加载（`launchctl print` 报 `Could not find service`），改它不产生任何效果，只作记录。别以为改了 plist 就好了。
+3. **窗口能设多大 ≠ 能跑**。MLX runner 并不按 `num_ctx` 截断：实测 `context_length: 65536` 下仍出现过 **120071 token** 的 prompt 被全量 prefill。所以抬到 64K 只解决"能不能启动"，**单轮输入仍要压在 1 万 token 内**（见 §9）。
+
+### 为什么 64K 在 48 GB 上装得下
+
+这代 27B 是**混合线性注意力**架构：64 层里只有 16 层是全注意力（`full_attention_interval=4`，4 KV heads × head_dim 256），其余 48 层是线性注意力、状态与序列长度无关。所以 bf16 KV 只有约 **64 KiB/token**——比同样参数量的纯注意力模型小一个量级。
+
+| 上下文 | KV 估算（bf16） | 实测 `/api/ps` |
+|---|---|---|
+| 空闲（仅权重） | 0 | 16.9 GiB |
+| 65536（跑完一轮会话） | ~4 GiB | 30.0 GiB |
+| 262144（满窗） | ~16 GiB | —— 48 GB 上必然 evict |
+
+而且 MLX 的 KV 是**按实际用量动态分配**的（不是启动时一次性预占），所以抬窗口本身几乎不花钱，真正的成本是"你真的塞了多长的 prompt"。
+
+### 连带现象：多会话抢单槽位 → 看起来"provider 一直无响应"
+
+`OLLAMA_NUM_PARALLEL=1`：同一个模型同时只服务**一个**请求，其余排队。当多个 agent 回合各自带着 6–16 万 token 的历史同时重试时，每个都在等别人，逐个撞上 Hermes 的 900 s stale 阈值被杀、再从头 prefill → 表现就是"所有窗口全都没响应，但 Ollama 本身没有任何 ERROR"。
+
+```bash
+# 看有几个并发在抢
+lsof -nP -i TCP:11434 | grep ESTABLISHED | awk '{print $1,$2}' | sort | uniq -c
+# 看每个请求要读多少 token（total= 就是单轮 prompt 大小）
+grep "Prompt processing progress" ~/.ollama/logs/server.log | tail -5
+```
+
+**处置**（先挡新活，再清僵死回合）：
+
+```bash
+hermes pause                      # 只挡新回合，在跑的继续
+hermes gateway stop --yes         # 会列出占位会话（含跑了几小时的那种）
+# 网关会被 supervisor 自动拉起；没起来就 hermes gateway start
+hermes resume
+```
+
+清完 ollama 连接数应归零：`lsof -nP -i TCP:11434 | grep -c ESTABLISHED` → `0`。

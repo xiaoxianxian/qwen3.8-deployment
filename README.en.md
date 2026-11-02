@@ -218,6 +218,8 @@ open -a Ollama && sleep 10 && ollama ps
 
 **Pick by RAM**: 48 GB → **32768**; 32 GB → 16384; only ≥64 GB should consider 131072. **262144 always evicts on 48 GB.**
 
+> **Exception: use 65536 when the client has a 64 K floor.** Hermes Agent hard-rejects anything below 64 K (`MINIMUM_CONTEXT_LENGTH = 64_000`), failing with `below the minimum 64,000 required by Hermes Agent`. Such clients also need `model.context_length` **and** `model.ollama_num_ctx` raised. Note that **the `/v1` endpoint ignores the request-level `num_ctx`**, so the server window stays where it was — both sides must change. Full walkthrough: `TROUBLESHOOTING.md` §12.
+
 > Why bigger isn't better: the window is a **capacity** knob, not a **speed** knob. This machine prefills at 348–383 tok/s, so a 32 K prompt costs ~88 s just to read in, and 78 K costs ~217 s. Daily chat and coding rarely need more than 10 K.
 
 **Env var reference (most are unnecessary on this setup):**
@@ -225,11 +227,11 @@ open -a Ollama && sleep 10 && ollama ps
 | Variable | Effect | Recommendation |
 |----------|--------|----------------|
 | `OLLAMA_CONTEXT_LENGTH` | global default context | **Not recommended**: overridden by the GUI setting anyway |
-| `OLLAMA_FLASH_ATTENTION=1` | long-context speedup | Usually already on for Apple Silicon MLX; optional |
-| `OLLAMA_KV_CACHE_TYPE=q8_0` | quantize KV cache to save RAM | **Don't enable blindly**: it introduces int8 KV quantization (token-flipping has been measured); f16 is the safer default |
+| `OLLAMA_FLASH_ATTENTION=1` | long-context speedup | **No effect on MLX**: the value is only passed to the llama.cpp engine (`llm/server.go` → `NewLlamaServerRunner`); MLX uses its own attention kernels |
+| `OLLAMA_KV_CACHE_TYPE=q8_0` | quantize KV cache to save RAM | **No effect on the 27B (MLX)**: `kvct` only reaches the llama.cpp path. Does work for GGUF: `qwen3:4b` KV went 4608 → 2448 MiB |
 | `OLLAMA_KEEP_ALIVE=30m` | keep model resident 30 min | Cold reload measured at only 2.5–6 s; the 5-min default is fine |
 
-> `launchctl setenv` does not survive a reboot. Writing a plist is also unreliable here: this machine's `com.ollama.serve.plist` is `RunAtLoad=false` and **never takes effect** — the actual server is launched by Ollama.app. That's why all four vars measure as empty on this setup.
+> Persisting these env vars is **blocked on this machine** (verified 2026-11-02): `launchctl setenv` returns `Not privileged`; `launchctl bootstrap`/`load -w`/`submit` all fail with `5: Input/output error` (even a minimal `/bin/echo` plist); `open --env` does not reach the server subprocess. **Only the GUI `context_length` persists.**
 
 ### Step 7: Verify the install
 
