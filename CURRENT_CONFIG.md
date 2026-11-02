@@ -5,7 +5,7 @@ title: 当前配置与验证
 
 # Qwen3.8-27B 本地部署配置快照
 
-> **✅ 2026-11-03 实测状态（先看这里）**：**Ollama 0.40.13 + `qwen3.8:27b-mlx` 正常可用**。M5 Pro 48GB 上实测 100% GPU、上下文 **262144**（模型上限；先 32768 → 65536 因 Hermes ≥64K 硬门槛，但 64K 在真实 agent 长会话下仍溢出截断，11:11 进一步开到最大 262144 才稳定）、GPU 共享内存常驻 ~27 GiB、**decode 26.5–39 tok/s / prefill ~224 tok/s**（两个指标，见下方「实测速度定论」、别混读）、冷启动 2.5–6 s。不需要任何第三方引擎顶替。环境变量四件套（q8_0 / KEEP_ALIVE=30m / NUM_BATCH=2048 / FLASH_ATTENTION=1）经 `launchctl` 落地；MTP 自适应投机解码**确认生效**（`drafted=341 acceptance=0.71`）。
+> **✅ 2026-11-03 实测状态（先看这里）**：**Ollama 0.40.13 + `qwen3.8:27b-mlx` 正常可用**。M5 Pro 48GB 上实测 100% GPU、上下文 **262144**（模型上限；先 32768 → 65536 因 Hermes ≥64K 硬门槛，但 64K 在真实 agent 长会话下仍溢出截断，11:11 进一步开到最大 262144 才稳定）、GPU 共享内存常驻 ~27 GiB、**decode 26.5–39 tok/s / prefill ~224 tok/s**（两个指标，见下方「实测速度定论」、别混读）、冷启动 2.5–6 s。不需要任何第三方引擎顶替。环境变量四件套（q8_0 / KEEP_ALIVE=30m / NUM_BATCH=2048 / FLASH_ATTENTION=1）经 `launchctl` 落地；MTP 自适应投机解码**确认生效**（`drafted=341 acceptance=0.71`）。**KEEP_ALIVE=30m 已于 2026-11-03 01:06 最终验收生效**（`ollama ps` 的 `UNTIL` 列显示 `29 minutes from now` 而非 `Forever`；MTP 重启后仍生效，`drafted=84 acceptance=0.95`、decode 39.5 tok/s）。
 >
 > ⚠️ **本页 11-01 版本写的是「Ollama MLX runner 病态，主用 MTPLX 顶替」，该结论已于 11-02 推翻并被本页删除。** 真正原因是三件事叠加：① 上下文被设成 262144（不是 Modelfile 的 131072）；② 两个 27B 引擎同时驻留，48 GB 装不下；③ 单轮 prompt 高达 7.8 万 token。完整判定链与推翻过程见 `TROUBLESHOOTING.md` §10。
 >
@@ -114,7 +114,7 @@ killall Ollama && sleep 2 && open -a Ollama                       # 重启生效
 
 | 事项 | 说明 |
 |------|------|
-| `OLLAMA_KEEP_ALIVE` | 已设 **`30m`**（2026-11-03 老板最终裁定，与公众号文章一致；原话纠正「不是 60 秒、不是 -1，是 30 分钟」）。`ollama ps` 的 `UNTIL` 列会显示 `until <30分钟后的时刻>` 而非 `Forever`；若显示 `Forever` 说明读到的是旧 `-1`，需 `launchctl unload`+`load` 或重新 `setenv`（不只是重启 Ollama，见 `TROUBLESHOOTING.md` §6） |
+| `OLLAMA_KEEP_ALIVE` | 已设 **`30m`**（2026-11-03 老板最终裁定，与公众号文章一致；原话纠正「不是 60 秒、不是 -1，是 30 分钟」）。**✅ 2026-11-03 01:06 已最终验收生效**：`ollama ps` 的 `UNTIL` 列显示 `29 minutes from now`（而非 `Forever`）。若将来又显示 `Forever`，说明读到的是旧 `-1`，需 `launchctl unload`+`load` 或重新 `setenv`（不只是重启 Ollama，见 `TROUBLESHOOTING.md` §6） |
 | `OLLAMA_MAX_LOADED_MODELS` | 想设 `1` 防止多个模型同驻；同样受上面限制，改用「不用 `qwen3:4b` 就不会加载它」规避 |
 | `OLLAMA_NUM_PARALLEL` | 已是 `1`（单用户最优）。调大等于按倍数分配 KV，48 GB 扛不住 |
 

@@ -174,6 +174,8 @@ killall Ollama && sleep 2 && open -a Ollama
 
 **验法**：`ollama ps` 的 `UNTIL` 列，`30m` 生效时显示 `until <30分钟后的时刻>`；仍显示 `Forever` 就是读到旧 `-1`，回到上面重来。⚠️ 这是 macOS 的 GUI 会话域安全边界（`launchctl setenv` 必须本人在登录会话里跑），**agent / 沙箱进程无论如何都改不了**，只能由用户本人终端执行。
 
+> ✅ **2026-11-03 01:06 已按方案 A 最终验收通过**：老板本人终端跑完 `launchctl unload`+`load` + 重启 Ollama 后，`ollama ps` 的 `UNTIL` 列显示 `29 minutes from now`（不再是 `Forever`），30m 常驻正式生效；且重启后 MTP 投机解码仍正常（`drafted=84 acceptance=0.95`，decode 39.5 tok/s），未受重启影响。
+
 ---
 
 ## 7. localhost 代理与 IPv6 陷阱
