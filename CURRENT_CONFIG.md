@@ -64,6 +64,8 @@ ollama:
 
 本机实测（2026-11-02）：`OLLAMA_CONTEXT_LENGTH` / `OLLAMA_FLASH_ATTENTION` / `OLLAMA_KV_CACHE_TYPE` / `OLLAMA_KEEP_ALIVE` 经 `launchctl getenv` **全为空**，即当前完全没靠环境变量，配置由 GUI 设置 + 模型自带默认值驱动。
 
+> ✅ **关闭 Hermes 对本地长请求的主动 abort（执行层不拦截）**：`HERMES_STREAM_STALE_GIVEUP=0`（默认 5）。源码 `agent/chat_completion_local.py:stale_giveup()` 读此环境变量；连续 stale 次数 ≥ 阈值即立即 abort 整次调用（报错原文 "5 consecutive stale attempts — aborting this call"）。设为 0 关闭该断路器——之后本地长请求（大 prefill / 长会话）由模型侧自己慢跑或报错，Hermes 不再替你打断。写入 `~/.hermes/.env`，**重启 Hermes 生效**。配套：`agent.local_stream_stale_timeout`（默认 900s）是单次请求静默宽限，56K/156K 的 prefill（3–7 分钟）远在其内，一般无需改；只有单请求可能超过 15 分钟才需要抬高它。
+
 **先说结论：这台机器上，环境变量这条路是堵死的，而且有两个变量本来就没用。**
 
 ### 1) `OLLAMA_FLASH_ATTENTION` / `OLLAMA_KV_CACHE_TYPE` 对 MLX 后端无效
