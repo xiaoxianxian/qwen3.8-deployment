@@ -141,7 +141,7 @@ The MLX native build is usable right after `ollama pull`. The GGUF (Q5 / GSQ IQ3
 
 ```dockerfile
 FROM qwen3.8:27b-mlx
-PARAMETER num_ctx 32768           # daily setting on 48GB; only go 131072 on ≥64GB
+PARAMETER num_ctx 262144           # stable on this 48GB box (MLX KV dynamic); GUI overrides
 # Do NOT add draft_num_predict: the 0.40+ MLX runner self-tunes speculative decoding
 PARAMETER temperature 0.7
 PARAMETER top_p 0.95
@@ -172,7 +172,7 @@ TEMPLATE """{{- if .System }}<|system|>
 <|assistant|>
 {{ if .ReasoningContent }}<|reserved_special_token_145|>{{ .ReasoningContent }}<|end|>
 {{ end }}{{ .Response }}"""
-PARAMETER num_ctx 131072
+PARAMETER num_ctx 262144
 PARAMETER draft_num_predict 3
 ```
 
@@ -182,7 +182,7 @@ PARAMETER draft_num_predict 3
 FROM ./Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf   # for IQ3_XXS use the -IQ3_XXS- file
 FROM ./mmproj-Qwen3.8-27B-BF16.gguf
 TEMPLATE """(identical multimodal template as GGUF Q5 above)"""
-PARAMETER num_ctx 131072
+PARAMETER num_ctx 262144
 PARAMETER draft_num_predict 3
 ```
 
@@ -330,7 +330,7 @@ Full data: [A_B实测对比报告.md (A/B Report, Chinese)](./A_B实测对比报
 > Full troubleshooting playbook (9 issues + root cause + fix commands): **[TROUBLESHOOTING.md](./TROUBLESHOOTING.md)**. High-frequency answers below.
 
 ### Q1: Out of memory?
-Size the context by RAM: **48 GB → 32768, 32 GB → 16384**, only ≥64 GB should consider 131072. **Don't copy the marketed 262K value** — 262144 always triggers evict on 48 GB. If still tight, downsize quantization (IQ3_S / Q4_K_M) and confirm **no second inference engine is running**.
+Size the context by RAM: **this 48 GB box runs 262144 stably** (MLX KV is dynamically allocated, idle ~18–31GB; only drop to 32768/65536 if a second engine co-resides). The old "262144 always evicts on 48 GB" was a misread of a contention log and is void (see `CURRENT_CONFIG.md`). If still tight, downsize quantization (IQ3_S / Q4_K_M) and confirm **no second inference engine is running**.
 
 ### Q2: Generation is slow?
 Check for Swap — make sure the model is fully loaded into RAM.
@@ -342,9 +342,9 @@ The MLX native `qwen3.8:27b-mlx` has a built-in vision projector — just send a
 No. The local model runs fully offline.
 
 ### Q5: Will MLX blow up VRAM at 128K context?
-Single runs won't. In the 2026-09-10 A/B, MLX at 131072 context passed 10/10 on a 5-dimension question over 2 rounds with **zero OOM**; the GSQ / GGUF path (Q5, IQ3, etc.) is the same llama.cpp engine and is equally stable at 131K single-run. The occasional "intermittent VRAM overflow" was caused by **multiple sessions/processes calling the same MLX model at once**, stacking KV-cache VRAM — not the 128K context being too large.
+Single runs won't. In the 2026-09-10 A/B, MLX at 131072 context passed 10/10 on a 5-dimension question over 2 rounds with **zero OOM**; this box later ran **262144** (model max) single-run stably too (idle ~18–31GB, MLX KV dynamic). The GSQ / GGUF path (Q5, IQ3, etc.) is the same llama.cpp engine and is equally stable at 131K+ single-run. The occasional "intermittent VRAM overflow" was caused by **multiple sessions/processes calling the same MLX model at once**, stacking KV-cache VRAM — not the context being too large.
 
-> ⚠️ **"It fits" is not the same as "it's usable"** (added 2026-11-02): 131072 is a capacity ceiling, and real latency is set by prompt tokens. This machine prefills at 348–383 tok/s, so **a 32 K prompt costs ~88 s just to read in, and 78 K costs ~217 s**. On 48 GB use **32768** daily and raise it only for one-off long-document jobs.
+> ⚠️ **"It fits" is not the same as "it's usable"**: a capacity ceiling is unrelated to speed; real latency is set by **per-turn prompt tokens**. This machine prefills at 348–383 tok/s, so **a 32 K prompt costs ~88 s just to read in, 78 K ~217 s, 156 K ~7 min**. Opening the window to 262144 for long-session headroom is correct, but **keep each turn's input under ~10 K tokens** (tune file_read_max_chars / tool_output / history trimming) — otherwise one prefill takes minutes and Ollama's single concurrency blocks everything behind it.
 
 - Daily single run / short-mid interaction: `qwen3.8:27b-mlx` (MLX) with a 32768 window — fastest and most stable.
 - Long agent with concurrent sessions: switch to `qwen3.8-q5` (GGUF + llama.cpp, more stable concurrency); GSQ IQ3 shares the llama.cpp path with Q5 — same concurrency behavior, smaller but slower.

@@ -13,7 +13,7 @@ title: 完整部署方案
 > **0.40 起有三处行为变化，照更早的教程抄会踩坑**（2026-11-02 实测）：
 > ① 上下文长度的**真正开关是 Ollama.app 的设置**（`db.sqlite` 里的 `settings.context_length`），优先级**高于** Modelfile 的 `num_ctx`——改 Modelfile 不生效是常态；
 > ② MLX 路线**不要再手写 `draft_num_predict`**，0.40 已自适应投机解码，手动指定反而从 34.9 掉到 28.0 tok/s（[问题 5](./TROUBLESHOOTING.md#5-mtp-投机解码gguf-手动开--mlx-040-已自适应)）；
-> ③ 48 GB 机器**别把 262144 抄进配置**，必然触发 evict（模型反复被驱逐、永远加载不上）。日常用 32768。
+> ③ 本机 48 GB **实测 262144 稳定**（MLX KV 动态分配，idle ~18–31GB，不预占满窗）；早前"262144 必然 evict"是对争用日志的误读，已作废。日常把单轮输入压在 ~1 万 token 以内最稳。
 
 ## 适用对象
 
@@ -155,7 +155,7 @@ MLX 原生版 `ollama pull` 后即为可用模型；GGUF（Q5 / GSQ IQ3）路线
 
 ```dockerfile
 FROM qwen3.8:27b-mlx
-PARAMETER num_ctx 32768           # 48GB 机器日常档；≥64GB 才写 131072
+PARAMETER num_ctx 262144           # 本机 48GB 实测稳定（MLX KV 动态分配）；GUI 设置会覆盖
 # 不要加 draft_num_predict：0.40+ 的 MLX runner 已自适应投机解码，手写反而更慢
 PARAMETER temperature 0.7
 PARAMETER top_p 0.95
@@ -186,7 +186,7 @@ TEMPLATE """{{- if .System }}<|system|>
 <|assistant|>
 {{ if .ReasoningContent }}<|reserved_special_token_145|>{{ .ReasoningContent }}<|end|>
 {{ end }}{{ .Response }}"""
-PARAMETER num_ctx 131072
+PARAMETER num_ctx 262144
 PARAMETER draft_num_predict 3
 ```
 
@@ -196,7 +196,7 @@ PARAMETER draft_num_predict 3
 FROM ./Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf   # 换成 IQ3_XXS 用同名 -IQ3_XXS- 文件
 FROM ./mmproj-Qwen3.8-27B-BF16.gguf
 TEMPLATE """（与上方 GGUF Q5 完全一致的多模态模板）"""
-PARAMETER num_ctx 131072
+PARAMETER num_ctx 262144
 PARAMETER draft_num_predict 3
 ```
 
@@ -413,7 +413,7 @@ MTPLX 只吃 MLX 档案、Apple Silicon 专用；官方标的 87.6 tok/s 本机�
 > 按现象索引的完整排查手册（9 个常见问题 + 根因 + 修复命令）见 **[TROUBLESHOOTING.md](./TROUBLESHOOTING.md)**，以下为高频简答。
 
 ### Q1: 内存不足怎么办？
-按内存定上下文：**48 GB → 32768，32 GB → 16384**，≥64 GB 才考虑 131072。**不要照 262K 宣传值设**——48 GB 上 262144 必然触发 evict（判定方法见 [问题 10](./TROUBLESHOOTING.md#10-卡死--模型加载不上--每请求几分钟含-macos-27-后集中爆发的那次)）。仍不足再换更小量化（IQ3_S / Q4_K_M），并顺手确认**没有第二个推理引擎在同时跑**。
+按内存定上下文：**本机 48 GB 实测 262144 稳定**（MLX KV 动态分配，idle ~18–31GB，不预占满窗；多引擎同驻时才需下调到 32768/65536）。早期文档写"262144 必然 evict"是对争用日志的误读，已作废（见 `CURRENT_CONFIG.md`）。仍不足再换更小量化（IQ3_S / Q4_K_M），并顺手确认**没有第二个推理引擎在同时跑**。
 
 ### Q2: 生成速度很慢？
 检查是否开启了 Swap，确保模型完全加载到内存。
@@ -425,9 +425,9 @@ MLX 原生版 `qwen3.8:27b-mlx` 自带视觉投影，直接发图即可，无需
 不需要。本地模型完全离线运行，无需联网。
 
 ### Q5: MLX 跑 128K 上下文会爆显存吗？
-单跑不会。2026-09-10 的 A/B 实测中，MLX 在 131072 上下文下 5 维题 2 轮 **10/10 全过、零 OOM**；GSQ / GGUF 路线（Q5、IQ3 等）同属 llama.cpp 引擎，单跑 131K 上下文同样稳定。之前偶发的「间歇性显存溢出」，根因是**多个会话/进程同时调同一个 MLX 模型**，KV 缓存显存叠加——不是 128K 上下文太大。
+单跑不会。2026-09-10 的 A/B 实测中，MLX 在 131072 上下文下 5 维题 2 轮 **10/10 全过、零 OOM**；本机后续在 **262144** 上下文（模型上限）下也单跑稳定（idle ~18–31GB，MLX KV 动态分配）。GSQ / GGUF 路线（Q5、IQ3 等）同属 llama.cpp 引擎，单跑 131K+ 上下文同样稳定。之前偶发的「间歇性显存溢出」，根因是**多个会话/进程同时调同一个 MLX 模型**，KV 缓存显存叠加——不是上下文太长。
 
-> ⚠️ **但「不爆」不等于「好用」**（2026-11-02 补充）：131072 是容量上限，真实等待时间由 prompt token 数决定。本机预填充 348–383 tok/s，**32 K prompt 光读入就要 88 秒、78 K 要 217 秒**。48 GB 机器日常请用 **32768**，长文档任务再临时放大。
+> ⚠️ **「装得下」不等于「快」**：容量上限与速度无关，真实等待时间由 **单轮 prompt token 数** 决定。本机预填充 348–383 tok/s，**32 K prompt 光读入就要 88 秒、78 K 要 217 秒、156 K 要 ~7 分钟**。所以窗口开到 262144 给长会话留缓冲是对的，但**单轮输入仍要压在 ~1 万 token 以内**（控制 file_read_max_chars / tool_output / 历史裁剪），否则一次 prefill 就几分钟，Ollama 单并发会把后续请求全堵死。
 
 - 日常单跑 / 短中交互：直接用 `qwen3.8:27b-mlx`（MLX），窗口 32768，最快最稳。
 - 长 agent 多会话并发：改用 `qwen3.8-q5`（GGUF + llama.cpp，并发更稳）；GSQ IQ3 同为 llama.cpp 路径，并发表现与 Q5 一致，但体积更小、速度更慢。

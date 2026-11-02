@@ -18,7 +18,7 @@
 ## 核心结论
 - 推荐方案：MLX 原生版 `qwen3.8:27b-mlx`，M5 Pro 48GB 实测解码 23–35 tok/s（200 token 代码生成 34.9 tok/s）
 - **投机解码**：GGUF 路线仍需手动 `draft_num_predict 3`；**MLX 路线在 Ollama 0.40+ 已自适应，不要手写**（本机实测手写反而从 34.9 掉到 28.0 tok/s）
-- **上下文长度**：真正开关是 Ollama.app 设置（`db.sqlite` 的 `settings.context_length`），优先级高于 Modelfile 的 `num_ctx`；**48 GB 机器用 32768**，262144 必然 evict。窗口是容量不是速度——本机预填充 348–383 tok/s，32K prompt 光读入就要 88 秒，日常可用输入约 1 万 token
+- **上下文长度**：真正开关是 Ollama.app 设置（`db.sqlite` 的 `settings.context_length`），优先级高于 Modelfile 的 `num_ctx`；**本机 48 GB 实测 262144 稳定**（MLX KV 动态分配，idle ~18–31GB）。窗口是容量不是速度——本机预填充 348–383 tok/s，32K prompt 光读入就要 88 秒，日常可用输入约 1 万 token
 - 引擎选型：2026-10-03 实测，替换用的 MTPLX 引擎长文吞吐反而比 Ollama 慢 14%（其裸解码仅 Ollama 四成）；**日常维持 Ollama**。2026-11-02 曾因误判「MLX runner 病态」临时切过 MTPLX，已推翻并完全卸载
 - 省显存方案：GSQ-RCO IQ3_S（约 12GB，质量基本无损），适合同机还跑视频模型、显存吃紧的场景
 - 适用：macOS M1–M5、内存 ≥ 16GB（32GB 起流畅，48GB 为完整实测环境）；不适用：非 Apple Silicon、生产级多用户并发

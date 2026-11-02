@@ -29,37 +29,34 @@ title: 当前配置与验证
 |----|------|
 | **权威来源** | `~/Library/Application Support/Ollama/db.sqlite` → `settings.context_length`（即 Ollama.app「设置」里的上下文长度） |
 | **优先级** | GUI 设置 **高于** Modelfile 的 `num_ctx`。改了 Modelfile 不生效，先查这里 |
-| 本机当前值 | **131072**（2026-11-02 实测结论：见下方「为什么不是 262144」。**32768 不可用**——Hermes 有 `MINIMUM_CONTEXT_LENGTH=64000` 硬下限，低于它建 agent 阶段直接 `ValueError`；**262144 会抖**——48GB 上预占 36GB，配合 Hermes 5 万+ token 请求直接 swap 抖动→7 分钟超时。131072 是这台 48GB 机的可用窗口） |
+| 本机当前值 | **262144**（Ollama.app 上下文开关开到最大，即模型上限。先 32768→65536 因 Hermes ≥64K 硬门槛，但 64K 在真实 agent 长会话下仍溢出截断，最终开到 262144 才稳定。Hermes 有 `MINIMUM_CONTEXT_LENGTH=64000` 硬下限，低于它建 agent 直接 `ValueError`；262144 在 48GB 单模型实跑正常，MLX KV 动态分配不预占满窗，idle 仅 ~18–31 GB） |
 | 查看命令 | `sqlite3 "file:$HOME/Library/Application Support/Ollama/db.sqlite?mode=ro" "select context_length from settings;"` |
 | 修改前提 | 必须先**完全退出 Ollama.app**（只 `pkill ollama serve` 不够，GUI 会写回旧值；本机 `osascript quit` 遇 TCC 权限违例，用 `pkill -f "/Applications/Ollama.app"`） |
 | 校验 | `ollama ps` 的 `CONTEXT` 列 / `curl -s localhost:11434/api/ps \| grep context_length`，应与上面的值一致 |
 
-> ⚠️ **修正此前误判（两处，均来自 11-01 争用场景的误读）**：本页早前写过"262144 在 48 GB 必然 evict"——那是对一次**争用场景**下日志的误读（当时同时驻留多引擎 + 已被 swap 挤占，才出现 `predicted=24.8 GiB available=11.9 GiB → evicting`）。单模型**空闲**开到 262144 确实能跑（`/api/ps` 曾显示 vram 27.4 GiB、未 evict）。**但 11-02 实测推翻了"开到最大就稳"**：262144 下模型**预占 36 GB**，一旦 Hermes 发 4–8 万 token 真实请求，KV 继续涨、swap 打满，单条请求 7 分钟、Ollama 单并发把后续探测全堵死 → Hermes 报"5 次无响应放弃"。**所以 48GB 机不能开 262144 接 Hermes**，见上方「为什么是 131072」。
+> ⚠️ **修正此前误判（两处，均来自 11-01 争用场景的误读，已在 11-02 末次复核作废）**：本页早前写"262144 在 48 GB 必然 evict"——那是对一次**争用场景**日志的误读（当时同时驻留多引擎 + 已被 swap 挤占）。单模型开到 262144 正常（`/api/ps` 显示 vram ~27 GiB、未 evict）。**"262144 预占 36 GB→swap 抖动→7 分钟超时"也是误诊断**：36 GB 数字来自 11-02 上午 MTPLX 还占 40 GB 时的 `evicting` 日志，非单跑 262144 实况（262144 idle 仅 ~18–31 GB，MLX KV 动态分配不预占满窗）；7 分钟超时是一个 156K token 超大单轮 prompt 占满 Ollama 单并发槽位所致，是 prompt 过大不是窗口过大——262144 正把这 156K 请求正常返回 200。本机最终定值 **262144**（见下方「为什么是 262144」）。
 
-### 为什么是 131072（不是 262144，也不是 64K / 32768）（2026-11-02 实测纠正）
+### 为什么是 262144（不是 64K / 128K，也不是 32768）（2026-11-02 老板裁定）
 
-**Hermes 从 64K 起步**：`agent/model_metadata.py:274 MINIMUM_CONTEXT_LENGTH = 64_000`，低于此值在建 agent 阶段直接 `ValueError`，重试无效。所以只要这台机要接 Hermes，32768 就不可用——报错与排查过程见 `TROUBLESHOOTING.md` §12。
+**Hermes 从 64K 起步**：`agent/model_metadata.py:274 MINIMUM_CONTEXT_LENGTH = 64_000`，低于此值在建 agent 阶段直接 `ValueError`，重试无效。所以只要这台机要接 Hermes，32768 就不可用。
 
-**但 262144 在 48GB 上会抖，不能用。** 2026-11-02 实测：262144 上下文下模型**预占 36 GB**（权重 20 + KV 为满窗预留 16），本机 48GB 剩 ~12GB；此时 Hermes 一发 4–8 万 token 的真实请求，KV 继续涨、swap 被打满，单条请求跑 **7 分钟**才返回，Ollama 又是单并发，把 Hermes 的探测全堵在队列后 → Hermes 连报「5 次无响应放弃」。这就是本轮「又用不了」的直接原因。
+**64K / 128K 在真实 agent 长会话下会溢出截断，不够用。** 系统提示 4–8K + 工具 schema + 多轮历史，128K 窗口在长会话里照样被撑爆、尾部被截。老板实测把开关开到模型上限 **262144** 才稳定不截断。
 
-**131072 是这台 48GB 机的可用窗口**（已实测稳定）：
-- 模型预占 ~18–30 GB（随真实 prompt 大小浮动，MLX KV 按需增长），稳进 48GB，**不抖**；
-- 满足 Hermes ≥64K 下限，建 agent 不报错；
-- Hermes 拿到 128K 上下文窗口，真实会话基本不溢出截断。
+**262144 在 48GB 单模型实跑正常，不会抖。** MLX 的 KV 缓存是**动态分配**（按实际用量增长，不预占满窗），262144 idle 仅占 ~18–31 GB；之前"预占 36 GB→swap 抖动"是对 MTPLX 同驻争用日志的误读。262144 装得下 156K token 的单轮请求并正常返回 200。
 
-> ⚠️ **复发红线**：Hermes 会从模型能力里读到上下文上限 262144，并在（重）启动时把 `config.yaml` 的 `model.context_length` / `model.ollama_num_ctx` / `ollama.context_length` **同步回 262144**（本轮就是这么从 131072/32768 变回 262144 的）。一旦变回 262144，抖动复发。**每次 Hermes 重启后，先 `grep -nE "context_length|ollama_num_ctx" ~/.hermes/config.yaml` 确认三处都是 131072；不是就改回再重启 Hermes。** 烤 `num_ctx` 进模型 Modelfile 改不了 advertised 上限（实测 `ollama show` 仍报 262144），所以这条红线只能靠人工/脚本盯 `config.yaml`。
+> ✅ **Hermes 不会写回上下文**：经源码核验（`agent/model_metadata.py:2222` 的 `get_model_context_length` 对合法正整数直接 `return`、从不回写 `config.yaml`；`gateway/run.py:2363` 每请求重读 `config.yaml`），Hermes 的 `model.context_length` / `model.ollama_num_ctx` / `ollama.context_length` 三处设成什么就保持什么，**重启动不会变回 262144**。早期文档写的"复发红线：Hermes 重启同步回 262144"是误读，已作废。客户端三处与服务端 GUI `settings.context_length` **都设 262144** 即一致，无需每次重启后手动核对。
 
 配套的客户端侧配置（Hermes，三处必须一致）：
 
 ```yaml
 model:
-  context_length: 131072      # 决定压缩器窗口，也是地板检查的实际输入；48GB 机取 128K
-  ollama_num_ctx: 131072      # 一并抬高，避免两者不一致
+  context_length: 262144      # 决定压缩器窗口，也是地板检查的实际输入；与服务端 GUI 一致取模型上限
+  ollama_num_ctx: 262144      # 一并抬高，避免两者不一致
 ollama:
-  context_length: 131072
+  context_length: 262144
 ```
 
-⚠️ 关键：**服务端窗口由 GUI 的 `settings.context_length` 决定**（见上表「权威来源」），客户端 `ollama_num_ctx` 是请求级上限。两者**都**要改到 131072，只改一边不生效。
+⚠️ 关键：**服务端窗口由 GUI 的 `settings.context_length` 决定**（见上表「权威来源」），客户端 `ollama_num_ctx` 是请求级上限。两者**都**要改到 262144，只改一边不生效。
 
 > 「单轮 ≤1 万 token」的硬规则**不变**：即使开到 131072，预填充物理上限仍是 348–383 tok/s（27B 稠密模型的算力墙），10K token 约 29 秒、32K 约 88 秒、128K 约 5–6 分钟。**控制单轮输入才是正解**——Hermes 的 `file_read_max_chars` / `tool_output.max_bytes` 已下调（见 `TROUBLESHOOTING.md` §12），但仍可能由多轮历史累出 5 万+ token 请求；超长文档/代码库任务优先走云端 `agnes-3.0-flash`（Hermes 已配好的 provider），本地只做隐私敏感部分。
 
@@ -117,7 +114,7 @@ return NewLlamaServerRunner(gpus, modelPath, f, adapters, projectors, opts, numP
 
 | 配置项 | 要求 |
 |--------|------|
-| 内存 | ≥ 32 GB 可跑（上下文 16K～32K）；**≥ 64 GB 才建议把 num_ctx 提到 131072** |
+| 内存 | ≥ 32 GB 可跑（上下文 16K～32K 短对话）；**本机 48 GB 实测 262144 稳定**（MLX KV 动态分配，不预占满窗）；多引擎同驻时才需下调 |
 | 芯片 | Apple Silicon（M 系列） |
 | 磁盘空间 | 建议 30 GB+（含 Ollama 运行时） |
 
