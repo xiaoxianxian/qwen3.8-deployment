@@ -461,6 +461,49 @@ hermes resume
 | 历史不压缩（环 3 真凶） | **三选一**：① 云端快速摘要模型（配 `auxiliary.compression` 指向已配 key 的 DeepSeek/agnes，历史被压到 ~15K，代价：历史出机器）；② 本地保持短会话（`micro_compact` 已开 + 手动 `/new` 或 `/compress`）；③ 接受 q8_0 让慢请求能跑完 | 见 `CURRENT_CONFIG.md`「Hermes 历史压缩」节 |
 | 慢被当错杀（环 4） | `HERMES_STREAM_STALE_GIVEUP=0`（写入 `~/.hermes/.env`，重启 Hermes 生效）：关闭主动 abort，慢就慢、报错就报错，反馈权交给模型侧 | 重启后 `errors.log` 零次 stale-abort |
 
+### 补充实证（22:07 复核）：并发会话重试风暴才是「一直 loading」的表象
+
+q8_0 生效后單个请求其实**跑得动**——22:05–22:07 日志显示 55,614 token 请求以 ~227 tok/s 稳定 prefill、无 swap。但用户仍感觉「一直 loading」，因为：
+
+```
+agent.log 21:39–21:59：6+ 个不同 session 同时
+  "Stream stale for 900s (threshold 900s) — no chunks received. Killing connection."
+  context=45,260 / 47,521 / 49,926 / 55,480 / 57,981 / 66,098 / 84,731
+  → APIConnectionError → attempt 1/5、2/5 … 自动重发同一个大请求
+lsof -iTCP:11434：16 条 ESTABLISHED 连接
+hermes status：Jobs 4 active / 4 total；sessions list 里 7+ 个会话标 "just now"
+```
+
+**机制**：Ollama `NUM_PARALLEL=1` 只有一个槽。多个老会话各自带着 45K–85K 历史并发请求 → 全在排队 → 排队超过 900s 触发 `local_stream_stale_timeout` 杀连接 → 客户端重试 5 次 → 又发一遍大请求 → **无限重发循环**，槽永远不空，新会话也排不进去。
+
+⚠️ 这不是配置 bug，是**并发任务数 × 单会话历史体量**超过了单并发槽的吞吐。前几个月能用，是因为那时每个会话历史只有几 K～几万，多个会话排队也很快轮完。
+
+**处置**（会中断在跑的任务，需用户自己确认，不要由 agent 擅自执行）：
+```bash
+hermes sessions list                 # 先看哪些是老会话/占位会话
+hermes pause                         # 挡新回合，在跑的继续
+hermes gateway stop --yes            # 列出并停掉占位会话；supervisor 会自动拉起
+hermes resume                        # 确认干净后恢复
+```
+只保留 1 个活跃会话时，单请求 55K prefill ~4 分钟就能跑完；并发越多越接近"永远转圈"。
+
+### 补充实证：压缩器「两层失效」的精确机制
+
+比 §13 根因链第 3 环更细的两道关（都有日志/源码实锤）：
+
+1. **preflight 被 defer**：`agent/turn_context_compaction.py:286-292` 记 `Skipping preflight compression: rough estimate ~158,874 >= 98,304 is not anchored on real usage (last real provider prompt 0); deferring to the next response`。根因是 Ollama `/v1` **不返回 usage**（silent-clip，用户早在 `config.yaml` 注释里记过），压缩器拿不到真实 prompt token 数 → 粗估「未锚定」→ 先发一轮再压。源码 `agent/context_compressor.py:2983-3000` 的 `should_defer_preflight_to_real_usage()` 在 `_provider_omits_usage=False` 时返回 True（defer）；一旦 provider 被判定为「不返 usage」就不再 defer。
+2. **摘要模型 stall → 确定性兜底**：`auxiliary.compression` 是 `provider: auto / model: ''`（`config.yaml:151-154`），回落到**本地 27B**。要它读 100K+ 历史必然超过 `compression.context_timeout_seconds` 默认 120s（`hermes_cli/config_defaults.py:665`；`agent/conversation_compression_deadline.py:20`）→ stall。日志实锤它**会自动降级**：
+   ```
+   11:16:39 / 14:47:08  Context compression stalled on every summary route
+     — committing the deterministic fallback summary (no summary model)
+     Context compression committed a deterministic fallback summary …
+   ```
+   即 `DETERMINISTIC_SUMMARY_ROUTE`（`agent/context_compressor.py:97-101`）：**跳过 LLM，插入静态摘要并 drop 中间消息**——纯本地、不出机器，但会丢中间轮次细节，且要 stall ladder 先烧掉一个窗口才触发。
+
+⇒ **纯本地不可能有「保留语义的 LLM 摘要压缩」**：摘要模型本身要读 100K+，和主请求抢同一块单并发 GPU，只会更慢。想让 LLM 摘要真正跑通，只能把 `auxiliary.compression` 指向云端快速模型（本机已配 `DEEPSEEK_API_KEY` / `HERMES_CUSTOM_AGNES_API_KEY`），代价是**会话历史出机器**。这是隐私取舍，必须由用户拍板，agent 不得擅自改。
+
+> ⚠️ 别把 `context_timeout_seconds` 从 120s 调高来「让本地摘要跑完」：那会让每轮多一次 100K prefill（~7 分钟）且占住单并发槽，比不压缩更慢。
+
 ### 一句话避坑
 
 - **Ollama 变量别写 shell，写 `launchctl` / LaunchAgent**，否则等于没设。
