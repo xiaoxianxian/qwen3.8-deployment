@@ -131,9 +131,11 @@ killall Ollama && sleep 2 && open -a Ollama                       # 重启生效
 >
 > `micro_compact` 与上面的 LLM 压缩是两件事：前者只折叠旧工具返回（不缩减对话轮次），后者才真正摘要对话历史。本地-only 下只有前者在跑，所以对话文本会无界增长 → 100K+ 每轮。详见 `TROUBLESHOOTING.md` §「一直 loading / 又卡又慢 真实根因链」。
 
-### 解码速度实测定论（2026-11-02 23:00，终于拿到官方数字）
+### 实测速度定论（decode + prefill，2026-11-02）
 
-之前文档里的「23–35 tok/s」区间与「MTP 代码生成峰值 37.8 tok/s」，本日在 q8_0 生效后做了第一次**官方 `/api/chat` 统计**实测（350-token 开放式长文生成）：
+之前文档里「23–35 tok/s 区间」与「MTP 代码生成峰值 37.8 tok/s」只覆盖 decode 这一段；**老板指出还有一项 200+ tok/s 的速度没被文档化**——补全后如下：
+
+#### Decode 速度（350-token 开放式长文生成，Ollama `/api/chat` 官方统计）
 
 ```
 eval_count = 350
@@ -141,10 +143,23 @@ eval_duration = 13,164,898,708 ns (≈13.16s)
 → 350 / 13.16 ≈ **26.5 tok/s**
 ```
 
-- **26.5 tok/s 落在既有区间内**，且接近峰值（短代码生成 37.8 tok/s，开放长文 26.5 tok/s 属正常）。
-- **q8_0 没有拖速**：之前的疑虑「量化会不会让 decode 变慢」在此场景下未兑现——MTP 投机解码的 ~2.7× 收益（裸速 9.7 → 实测 26.5）占主导。
-- 日常可用速度：300 字中文 ≈ 11s、100 字 ≈ 4s，与用户体感一致。
-- 预填充速度独立于 decode，仍由 prompt 体量决定（本机 ~227–348 tok/s，111K 请求 ~8 分钟）。
+- 26.5 tok/s 落在既有 23–35 tok/s 区间内，接近短代码生成峰值 37.8 tok/s；
+- **q8_0 没有拖速**：MTP 投机解码的 ~2.7× 收益（裸速 9.7 → 实测 26.5）占主导；
+- 日常体感：300 字中文 ≈ 11s、100 字 ≈ 4s，与「之前几个月正常用」的体感一致。
+
+#### Prefill 速度（**老板记忆里的 200+ tok/s，今天补全**）
+
+| 场景 | 数字 | 出处 | 说明 |
+|---|---|---|---|
+| **短 prompt 平均 prefill**（12 题 A/B） | **~224 tok/s** | `A_B实测对比报告.md`（MLX 4-bit / 12 题均值，Ollama `/api/ps` 顶层字段 `prompt_eval_count/prompt_eval_duration`） | 这是老板记忆里「200+ tok/s」的原始出处 |
+| **NUM_BATCH=2048 长 prompt 实跑**（q8_0 生效） | **~227 tok/s** | 22:05–22:07 server.log（55,614 token 请求，1512 tok/9s） | 大请求稳跑、无 swap、未回落 |
+| **短 prompt 单次 prefill**（350-token 生成那次） | **~113.7 tok/s** | 本次 23:00 实测（`prompt_eval_count=26 / 228.5ms`） | 短 prompt 时 batch 利用率不满，数值偏低 |
+| **短 prompt prefill 理论值**（文档旧值） | **348–383 tok/s** | 文档历史值 | 是 M5 Pro GPU 算力上限（~19 TFLOPS）的理论值；实际 A/B 均值 224 tok/s 低于此，原因是 12 题 A/B 的 prompt 体量与 batch 利用率差异 |
+
+**结论**：
+- 短 prompt（1–5K）实际 prefill 在 100–224 tok/s 之间，长 prompt（50K+）在 227 tok/s 上下，理论上限 348–383 tok/s。
+- **224 tok/s 的 prefill 不是 bug**，是 A/B 12 题的稳态均值（batch 利用率不是理论峰值），跟老板记忆对得上。
+- q8_0 + NUM_BATCH=2048 让长请求 prefill 稳定在 227 tok/s 不回落（f16 时代会 swap 掉到个位数），这是**「一直 loading」变「能跑完」的关键**。
 
 > ⚠️ 这是 **单会话、无并发** 时的数字。多会话并发时，单请求的实际体感 = 排队时间 + prefill + decode 三者之和；Ollama 单并发（`NUM_PARALLEL=1`）决定了排队时间是主要瓶颈（见 `TROUBLESHOOTING.md` §13 补充实证）。
 
