@@ -124,6 +124,13 @@ PARAMETER draft_num_predict 3
 - 验证：日志出现 `specu: n_max=3`，draft acceptance 0.6~0.85
 - 输出无损，属免费提速
 
+**MLX 路线的正确验法（2026-11-03 复核，别用 `ollama show` 找 `draft_num_predict`）**：
+
+`ollama show qwen3.8:27b-mlx --parameters` **不会显示** `draft_num_predict`（它是 runner 级投机参数，不是采样参数），所以"看 `ollama show` 有没有 `draft_num_predict`"这个验法是错的——看到没有会误判成"MTP 丢了"，其实 MTP 好好地自适应开着。正确验法两条：
+
+1. **看 server.log 的投机解码统计**：`grep 'speculative decode stats' ~/.ollama/logs/server.log`，`drafted=N`（N>0）即 MTP 生效。本机 00:29 实测 `iterations=159 drafted=341 accepted=241 acceptance=0.71`。⚠️ 注意**短请求（迭代 <10 次）`drafted=0` 是正常的**——投机解码没机会启动，别拿一次 `ollama run "hi"` 的 `drafted=0` 当"MTP 关了"。
+2. **实测速度**：代码生成 ≥32 tok/s（本机 39.0 / 32.8）即 MTP 在跑；裸速只有 ~9.7 tok/s。
+
 ---
 
 ## 6. keep_alive 对 /v1 端点不生效
@@ -142,6 +149,30 @@ launchctl setenv OLLAMA_KEEP_ALIVE 30m
 
 - 需要按请求控制时，用 Ollama 原生 API `/api/chat`（支持 `keep_alive` 参数）
 - /v1 端点依赖上面的全局环境变量
+
+**🔴 新踩坑（2026-11-03）：改了 plist 文件内容 ≠ 运行时环境更新，`launchctl setenv` 的旧值会一直残留**
+
+场景：先 `launchctl setenv OLLAMA_KEEP_ALIVE -1`（永久常驻），后来把 `com.user.ollama-env.plist` 文件里的值改成 `30m`，然后 `killall Ollama && open -a Ollama` 重启。**结果 `ollama ps` 还是显示 `UNTIL Forever`**——因为：
+
+1. `launchctl setenv` 写入的是**当前登录会话的运行时环境**，它不会去读 plist 文件；
+2. 改 plist 文件**只是改了磁盘上的文本**，`RunAtLoad` 只在**下次 `launchctl load` 或重新登录**时才执行；
+3. 重启 Ollama 只会让它**重新读运行时环境**，而运行时环境里残留的还是旧值 `-1`。
+
+**正确修复（二选一，都要在本人终端跑，WorkBuddy 沙箱连 `dangerouslyDisableSandbox` 都报 `Not privileged to set domain environment`）**：
+
+```bash
+# 方案 A：重新 load plist（一次性对齐 plist 里全部变量，推荐）
+launchctl unload ~/Library/LaunchAgents/com.user.ollama-env.plist && \
+launchctl load ~/Library/LaunchAgents/com.user.ollama-env.plist
+# 然后重启 Ollama
+killall Ollama && sleep 2 && open -a Ollama
+
+# 方案 B：直接重新 setenv 单个变量
+launchctl setenv OLLAMA_KEEP_ALIVE 30m
+killall Ollama && sleep 2 && open -a Ollama
+```
+
+**验法**：`ollama ps` 的 `UNTIL` 列，`30m` 生效时显示 `until <30分钟后的时刻>`；仍显示 `Forever` 就是读到旧 `-1`，回到上面重来。⚠️ 这是 macOS 的 GUI 会话域安全边界（`launchctl setenv` 必须本人在登录会话里跑），**agent / 沙箱进程无论如何都改不了**，只能由用户本人终端执行。
 
 ---
 
@@ -455,9 +486,9 @@ hermes resume
 
 | 环节 | 解法 | 验证 |
 |------|------|------|
-| 优化项不生效（环 2） | 走 `launchctl setenv`（用户会话域）或 LaunchAgent plist `~/Library/LaunchAgents/com.user.ollama-env.plist`，再**重启 Ollama** | server 日志实锤 `OLLAMA_KV_CACHE_TYPE:q8_0` / `KEEP_ALIVE:-1` / `FLASH_ATTENTION:true` |
+| 优化项不生效（环 2） | 走 `launchctl setenv`（用户会话域）或 LaunchAgent plist `~/Library/LaunchAgents/com.user.ollama-env.plist`，再**重启 Ollama** | server 日志实锤 `OLLAMA_KV_CACHE_TYPE:q8_0` / `FLASH_ATTENTION:true`；KEEP_ALIVE 最终定 **`30m`**（老板 11-03 裁定，与公众号文章一致；此前救机时设的 `-1` 已作废） |
 | swap 至死（环 2→3 连接点） | `OLLAMA_KV_CACHE_TYPE=q8_0`：KV 砍半到 ~25GB，装得进 48GB，109K 请求从"swap 死"变"稳跑完（~227 tok/s 无 swap）" | 实测 109K 请求稳定 prefill 完、不再永久 loading |
-| prefill 慢（环 3） | `OLLAMA_NUM_BATCH=2048` + `KEEP_ALIVE=-1`（常驻免重载） | 大 prompt prefill 提速、不再每次重载 |
+| prefill 慢（环 3） | `OLLAMA_NUM_BATCH=2048` + `KEEP_ALIVE=30m`（驻留 30 分钟免重载） | 大 prompt prefill 提速、不再每次重载 |
 | 历史不压缩（环 3 真凶） | **三选一**：① 云端快速摘要模型（配 `auxiliary.compression` 指向已配 key 的 DeepSeek/agnes，历史被压到 ~15K，代价：历史出机器）；② 本地保持短会话（`micro_compact` 已开 + 手动 `/new` 或 `/compress`）；③ 接受 q8_0 让慢请求能跑完 | 见 `CURRENT_CONFIG.md`「Hermes 历史压缩」节 |
 | 慢被当错杀（环 4） | `HERMES_STREAM_STALE_GIVEUP=0`（写入 `~/.hermes/.env`，重启 Hermes 生效）：关闭主动 abort，慢就慢、报错就报错，反馈权交给模型侧 | 重启后 `errors.log` 零次 stale-abort |
 

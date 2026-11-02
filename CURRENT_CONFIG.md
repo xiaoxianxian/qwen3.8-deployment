@@ -5,7 +5,7 @@ title: 当前配置与验证
 
 # Qwen3.8-27B 本地部署配置快照
 
-> **✅ 2026-11-02 实测状态（先看这里）**：**Ollama 0.40.13 + `qwen3.8:27b-mlx` 正常可用**。M5 Pro 48GB 上实测 100% GPU、上下文 **262144**（模型上限；先 32768 → 65536 因 Hermes ≥64K 硬门槛，但 64K 在真实 agent 长会话下仍溢出截断，11:11 进一步开到最大 262144 才稳定）、GPU 共享内存常驻 ~27 GiB、解码 23–35 tok/s、冷启动 2.5–6 s。不需要任何第三方引擎顶替。
+> **✅ 2026-11-03 实测状态（先看这里）**：**Ollama 0.40.13 + `qwen3.8:27b-mlx` 正常可用**。M5 Pro 48GB 上实测 100% GPU、上下文 **262144**（模型上限；先 32768 → 65536 因 Hermes ≥64K 硬门槛，但 64K 在真实 agent 长会话下仍溢出截断，11:11 进一步开到最大 262144 才稳定）、GPU 共享内存常驻 ~27 GiB、**decode 26.5–39 tok/s / prefill ~224 tok/s**（两个指标，见下方「实测速度定论」、别混读）、冷启动 2.5–6 s。不需要任何第三方引擎顶替。环境变量四件套（q8_0 / KEEP_ALIVE=30m / NUM_BATCH=2048 / FLASH_ATTENTION=1）经 `launchctl` 落地；MTP 自适应投机解码**确认生效**（`drafted=341 acceptance=0.71`）。
 >
 > ⚠️ **本页 11-01 版本写的是「Ollama MLX runner 病态，主用 MTPLX 顶替」，该结论已于 11-02 推翻并被本页删除。** 真正原因是三件事叠加：① 上下文被设成 262144（不是 Modelfile 的 131072）；② 两个 27B 引擎同时驻留，48 GB 装不下；③ 单轮 prompt 高达 7.8 万 token。完整判定链与推翻过程见 `TROUBLESHOOTING.md` §10。
 >
@@ -71,7 +71,7 @@ ollama:
 | 变量 | 值 | 为什么 |
 |------|-----|--------|
 | `OLLAMA_KV_CACHE_TYPE` | `q8_0` | **最关键**。262144 上下文下 f16 KV cache 约 50GB > 48GB → swap 至死、永久 loading；q8_0 砍半到 ~25GB，装得进 48GB，长请求能跑完 |
-| `OLLAMA_KEEP_ALIVE` | `-1` | 模型常驻不卸载，免每次对话重载（长会话反复重载也拖慢） |
+| `OLLAMA_KEEP_ALIVE` | `30m` | 模型驻留 30 分钟免重载（冷启动 2.5–6 s 只在 30 分钟无调用后才发生）。**2026-11-03 老板最终裁定 30m**（原话纠正：不是 60 秒、也不是 -1，是 30 分钟，与公众号文章 `OLLAMA_KEEP_ALIVE 30m` 一致）；-1 会永久占 25 GB 显存 idle 不释放，30m 是省显存与免冷启的折中。⚠️ 从 -1 改回 30m 时有个坑：改 plist 文件 ≠ 更新运行时环境，`launchctl setenv` 的旧 `-1` 会残留（重启 Ollama 仍显示 `Forever`），需 `launchctl unload`+`load` 或本人终端重新 `setenv`（见 `TROUBLESHOOTING.md` §6） |
 | `OLLAMA_NUM_BATCH` | `2048` | prefill 提速（batch 512→2048 少 forward pass），大 prompt 受益明显 |
 | `OLLAMA_FLASH_ATTENTION` | `1` | MLX 后端内置常开，变量基本 no-op，写上无妨 |
 
@@ -114,7 +114,7 @@ killall Ollama && sleep 2 && open -a Ollama                       # 重启生效
 
 | 事项 | 说明 |
 |------|------|
-| `OLLAMA_KEEP_ALIVE` | 已设 `-1`（Forever）常驻，免重载。冷重载本身只需 2.5–6 s，但长会话反复重载也拖慢，常驻更稳 |
+| `OLLAMA_KEEP_ALIVE` | 已设 **`30m`**（2026-11-03 老板最终裁定，与公众号文章一致；原话纠正「不是 60 秒、不是 -1，是 30 分钟」）。`ollama ps` 的 `UNTIL` 列会显示 `until <30分钟后的时刻>` 而非 `Forever`；若显示 `Forever` 说明读到的是旧 `-1`，需 `launchctl unload`+`load` 或重新 `setenv`（不只是重启 Ollama，见 `TROUBLESHOOTING.md` §6） |
 | `OLLAMA_MAX_LOADED_MODELS` | 想设 `1` 防止多个模型同驻；同样受上面限制，改用「不用 `qwen3:4b` 就不会加载它」规避 |
 | `OLLAMA_NUM_PARALLEL` | 已是 `1`（单用户最优）。调大等于按倍数分配 KV，48 GB 扛不住 |
 
@@ -133,6 +133,13 @@ killall Ollama && sleep 2 && open -a Ollama                       # 重启生效
 
 ### 实测速度定论（decode + prefill，2026-11-02）
 
+> 🔴 **先读这段，否则下面两个数字会被混读**：**decode 和 prefill 是两件不同的事，别当一个"速度"看。**
+> - **decode（写回答）**：模型**逐字生成回答**的速度，受内存带宽限制，**慢**（本机 20–35 tok/s）。你等生成时间主要看这个。
+> - **prefill（读提示词）**：模型**一次性消化你的输入**的速度，大批量并行、GPU 算力吃满，**快**（本机 ~224 tok/s）。你等"反应"主要看这个。
+> - 两者差 ~7 倍是 GPU 并行 vs 串行的**正常物理结果**，不是配置错、不是 bug。
+> - 实测里"23–35 tok/s"指 **decode**；"200+ tok/s"指 **prefill**。之前文档把两个数放同一页没标清楚，是歧义来源，已修正。
+> - 类比：prefill = 读书速度（快，读完一次就好）；decode = 写字速度（慢，逐字来）。
+
 之前文档里「23–35 tok/s 区间」与「MTP 代码生成峰值 37.8 tok/s」只覆盖 decode 这一段；**老板指出还有一项 200+ tok/s 的速度没被文档化**——补全后如下：
 
 #### Decode 速度（350-token 开放式长文生成，Ollama `/api/chat` 官方统计）
@@ -147,6 +154,8 @@ eval_duration = 13,164,898,708 ns (≈13.16s)
 - 关于「23–35 tok/s」的**出处追溯**（老板追问，已查实）：这是 A/B 实测后写入 `CURRENT_CONFIG.md` 的**文档归纳**（「实测解码 23–35 tok/s」），原始数据来源是 `A_B实测对比报告.md` 里 12 题逐题 decode（MLX 4-bit 21.99–39.45 tok/s，均值 29.90）。**原始 12 题表里没有 23/35 这两个端点数值**——23 接近 C1 题（24.53）下限、35 接近 A3 题（36.68）上限，是 A/B 后的文档归纳近似，不是某次精确实测。`TROUBLESHOOTING.md:262` 也沿用了「23–35 tok/s」这个写法，同样来自 A/B 后的归纳，非单次精确值。若后续要更精确的 decode 数字，以 Ollama `/api/chat` 官方字段（`eval_count/eval_duration`）单次实测为准（本日 350-token 开放长文 = **26.5 tok/s**，短 prompt 峰值 = **37.8 tok/s**，A/B 12 题均值 = **29.90 tok/s**）。
 - **q8_0 没有拖速**：MTP 投机解码的 ~2.7× 收益（裸速 9.7 → 实测 26.5）占主导；
 - 日常体感：300 字中文 ≈ 11s、100 字 ≈ 4s，与「之前几个月正常用」的体感一致。
+
+> ✅ **2026-11-03 干净状态复核（无并发争抢时）**：代码生成（冒泡排序 / 任务队列类）**39.0 / 32.8 tok/s**、开放式长文（递归解释 350 token）**26.7 tok/s**，与 37.8 峰值同档。这组数字是在**清空并发会话后**实测的，对应 MTP 自适应投机解码生效（server.log `drafted=341 accepted=241 acceptance=0.71`）。⚠️ 之前有次测到 28.3 tok/s 是被一个 93K token 的并发大请求抢占资源所致——**测 decode 速度前务必确认没有别的会话在同时调模型**，否则测出来的是"排队 + 争抢"的脏数字。
 
 #### Prefill 速度（**老板记忆里的 200+ tok/s，今天补全**）
 
@@ -208,7 +217,86 @@ eval_duration = 13,164,898,708 ns (≈13.16s)
 ## 注意事项
 
 1. **MLX 不识别 GGUF**：必须用原生 MLX 格式（`ollama pull qwen3.8:27b-mlx`）。
-2. **不要手动加 `draft_num_predict`**：0.40.13 的 MLX runner **已默认自适应投机解码**，官方标签原样最快。本机对拍：官方标签 34.9 tok/s vs 手动加 `draft_num_predict 3` 只有 28.0 tok/s。此项仅对 GGUF 路线仍需显式开启（见 `TROUBLESHOOTING.md` §5）。
+2. **不要手动加 `draft_num_predict`**：0.40.13 的 MLX runner **已默认自适应投机解码**，官方标签原样最快。本机对拍：官方标签 34.9 tok/s vs 手动加 `draft_num_predict 3` 只有 28.0 tok/s。此项仅对 GGUF 路线仍需显式开启（见 `TROUBLESHOOTING.md` §5）。**2026-11-03 复核确认**：当前模型 `ollama show --parameters` 里**没有** `draft_num_predict`，但实测代码生成 39.0 tok/s、server.log 出现 `speculative decode stats ... drafted=341 accepted=241 acceptance=0.71`——证明 MLX 0.40+ 确实自适应投机解码、无需手动开。
 3. **`iogpu.disable_wired_collector=1` 重启失效**：治「空闲后首个请求要重新从 swap 页入权重」，开机需重跑一次 `sudo sysctl iogpu.disable_wired_collector=1`。
 4. **使用 127.0.0.1 而非 localhost**：避免代理与 IPv6 路由问题。
 5. **跨版本测试 Ollama 必须隔离模型目录**：旧版二进制启动 GC 会清空新版模型库，见 `TROUBLESHOOTING.md` §11。
+6. **🔴 修正（2026-11-03 复核，作废 11-02 的旧说法）**：早前写"`qwen3.8:27b-mlx` 官方 tag 不含 MTP、要靠仓库 Modelfile 的 `draft_num_predict 3` 固化"是**0.33 时代的遗留说法，在 0.40+ 的 MLX 上已过时**。事实是：MLX 原生版**自带** `RENDERER qwen3.8` + `CAPABILITY vision/tools/thinking`，即使 `TEMPLATE` 是裸 `{{ .Prompt }}`，多模态也能正常工作（靠 RENDERER 不靠 TEMPLATE）；MTP 投机解码也是 **runner 级自适应**，无需 Modelfile 手动加 `draft_num_predict`（手动加反而 -20%，见注意事项第 2 条）。**当前正确状态**：`ollama show --parameters` 里**没有** `draft_num_predict` 是**正常的**，不代表 MTP 没开。**正确验法**：① server.log 出现 `speculative decode stats ... drafted=N`（N>0 即 MTP 生效，本机 00:29 实测 `drafted=341 accepted=241 acceptance=0.71`）；② 实测代码生成 ≥32 tok/s（裸速只有 ~9.7）。**别用 `ollama show` 找 `draft_num_predict`**——那字段根本不显示，会误判成"MTP 丢了"。
+
+---
+
+## 📋 复用检查清单（部署 Qwen4-27B 或其他新模型时对照跑一遍）
+
+> 这是 Qwen3.8 整套踩坑经验的**可复用骨架**。换模型时**不必重走弯路**——把下面每一项的"值"替换成新模型/新配置，但**顺序和判断逻辑照搬**。每项都标了"为什么"和"验法"，照着做即可。
+>
+> ⚠️ **Qwen4-27B 特别提醒**：以下值（262144 / q8_0 / NUM_BATCH=2048 / 26.5 tok/s 等）是 **Qwen3.8 在 M5 Pro 48GB 上实测**的。Qwen4 的模型上限、MLX 是否支持、最优量化档、最优窗口**都要重新实测**，本清单只是"该测什么、按什么顺序、怎么判定"的方法，不是可直接抄的数值。
+
+### 第 0 步：硬件与环境（不变）
+
+| 项 | Qwen3.8 实况 | 换模型时 |
+|---|---|---|
+| 芯片 | M5 Pro / 48GB 统一内存 | 不变，沿用 |
+| Ollama | 0.40.13（GUI 托管） | 确认 GUI 版本，跨版本测试要隔离模型目录 |
+| MLX residency 修复 | `sudo sysctl iogpu.disable_wired_collector=1`（**每次开机重跑**） | 不变 |
+| 访问端点 | `127.0.0.1`（别用 localhost，避代理/IPv6） | 不变 |
+
+### 第 1 步：选量化档（先比体积 vs 速度 vs 质量）
+
+- **Qwen3.8 选了 MLX 原生 nvfp4（4-bit，~18GB）**，decode 29.9 tok/s 碾压 GSQ/Q5 混合精度。
+- 换 Qwen4：先 `ollama pull` 它的**原生 MLX 标签**（若有），跑一次 A/B（12 题 decode + prefill，方法见 `A_B实测对比报告.md`），**别预设** 3.8 的最优档在 4 上也最优。
+- **验法**：`A_B实测对比报告.md` 里的方法——同一套 12 题、`num_predict=4096`、`num_ctx` 拉满、串行跑完即卸载，取 Ollama `/api/ps` 的 `eval_count/eval_duration`（decode）与 `prompt_eval_count/prompt_eval_duration`（prefill）。
+
+### 第 2 步：定上下文窗口（GUI 是权威，不是 Modelfile）
+
+- **最易踩**：窗口开关在 `~/Library/Application Support/Ollama/db.sqlite` → `settings.context_length`（Ollama.app「设置」），**优先级高于 Modelfile 的 `num_ctx`**。改 Modelfile 不生效，先改这里。
+- Qwen3.8 最终开满 **262144**（模型上限）。**换 Qwen4 时**：
+  1. `ollama show <新模型>` 看它**内置上下文上限**（可能是新值，别照抄 262144）；
+  2. 按你的客户端（Hermes `MINIMUM_CONTEXT_LENGTH=64000` 硬门槛）+ 真实会话体量，**开满上限**给长会话缓冲；
+  3. 但**单轮输入仍压 ~1 万 token**，否则 prefill 分钟级。
+- **验法**：`sqlite3 "file:$HOME/Library/Application Support/Ollama/db.sqlite?mode=ro" "select context_length from settings;"` + `ollama ps` 的 `CONTEXT` 列，两者必须一致。
+
+### 第 3 步：开四个环境变量（48GB + 大窗口 + 本地 27B 必开）
+
+| 变量 | Qwen3.8 值 | 作用 | 换模型时 |
+|---|---|---|---|
+| `OLLAMA_KV_CACHE_TYPE` | `q8_0` | 大窗口下 KV 砍半不 swap（**最关键**） | 必开，但确认 Qwen4 的 MLX 是否同样吃 q8_0 |
+| `OLLAMA_KEEP_ALIVE` | `30m` | 驻留 30 分钟免重载（老板裁定 30m，非 -1、非 60 秒） | 必开，值按你的取舍定 |
+| `OLLAMA_NUM_BATCH` | `2048` | prefill 提速 | 必开 |
+| `OLLAMA_FLASH_ATTENTION` | `1` | MLX 内置常开，no-op | 写上无妨 |
+
+- 🔴 **写入方式**：Ollama.app 是独立 GUI 进程，**不读 `.zshrc`**！必须 `launchctl setenv`（本人终端）或 `~/Library/LaunchAgents/com.user.ollama-env.plist`（持久），再**重启 Ollama**。
+- 🔴 **改值时的坑**：`launchctl setenv` 的值会**残留在登录会话运行时环境**里，改 plist 文件**不会自动更新运行时**。从 `-1` 改回 `30m` 后，重启 Ollama 仍读旧 `-1`（`ollama ps` 显示 `Forever`）。必须 `launchctl unload`+`load` plist 或本人终端重新 `setenv`（详见 `TROUBLESHOOTING.md` §6）。
+- 🔴 **`launchctl setenv` 只能本人终端跑**：macOS GUI 登录会话域边界，**agent / WorkBuddy 沙箱进程连 `dangerouslyDisableSandbox` 都报 `Not privileged to set domain environment`**——这不是沙箱开关能绕过的，必须用户本人终端执行。
+- **验法**：`launchctl getenv OLLAMA_KV_CACHE_TYPE` 立即回显 `q8_0`；重启后看 `server.log` 启动段有 `OLLAMA_KV_CACHE_TYPE:q8_0`；`ollama ps` 的 `UNTIL` 列显示 `until <30分钟后时刻>`（而非 `Forever`）即 KEEP_ALIVE=30m 生效。
+
+### 第 4 步：测速（分清 decode 与 prefill，别混读）
+
+- **decode**：Ollama `/api/chat` 官方字段 `eval_count/eval_duration`（Qwen3.8 开放长文 26.5 / 短代码峰值 37.8 / A/B 均值 29.9）。
+- **prefill**：`prompt_eval_count/prompt_eval_duration`（Qwen3.8 短 prompt 均值 224 / 长 prompt 实跑 227 / 理论上限 348–383）。
+- 🔴 **两个指标差 ~7 倍是正常的**（GPU 并行 vs 串行），不是配置错。
+- 🔴 **测速前先确认无并发**：`ollama ps` 确认没有别的会话/进程在同时调模型，否则测出来的是"排队 + 争抢"的脏数字。本机 11-03 就踩过：被一个 93K token 并发大请求抢占时测到 28.3 tok/s，清空后同一模型测到 39.0 tok/s。
+- 换 Qwen4：同样跑一遍，**记录两个数**，和 3.8 对比判断"是否更好用"——**比的是同场景 decode+prefill，不是只看一个数**。
+
+### 第 5 步：客户端对齐（接 Hermes 等 agent）
+
+- `~/.hermes/config.yaml` 三处上下文（`model.context_length` / `model.ollama_num_ctx` / `ollama.context_length`）要和 GUI 的 `context_length` **一致**（Qwen3.8 都是 262144）。只改一边不生效。
+- Hermes 的 `HERMES_STREAM_STALE_GIVEUP=0`（写 `~/.hermes/.env`）：执行层不主动打断长请求，慢就慢、错就错，反馈权在模型侧。
+- **验法**：`grep -nE "context_length|ollama_num_ctx" ~/.hermes/config.yaml` 三处一致；重启 Hermes 后读 gateway 进程环境确认。
+
+### 第 6 步：警惕"并发风暴"（多会话场景）
+
+- Ollama `NUM_PARALLEL=1` **单并发**。多个老会话各带几十 K 历史并发 → 排队 → 超 900s stale → 重试 5 次 → **无限重发堵死槽**。
+- **单会话正常用**，别并发开多个老会话；要清就 `hermes sessions list` → `pause` → `gateway stop --yes` → `resume`。
+- **验法（本机 11-03 实测）**：`hermes status` 看 `Jobs: N active`（N>1 即并发风暴）；`lsof -nP -i TCP:11434 | grep -c ESTABLISHED` 看连接数；`tail ~/.ollama/logs/server.log` 看有没有 `Prompt processing progress ... total=93510` 这类超大单轮请求（一个会话带 9 万+ token 历史原样发出）。本机 11-03 就抓到 `Jobs 4 active` + 一条 93510 token 的请求把单并发槽占满、把测速请求全堵超时。
+
+### 第 7 步：历史压缩（可选，有代价）
+
+- 纯本地做不了"保留语义的 LLM 摘要"（摘要模型本身要读 100K+，抢单 GPU）。
+- 选项：**A 纯本地确定性兜底**（丢中间细节、零隐私代价）/ **B 云端摘要模型**（保语义、历史出机器）。
+- ⚠️ **别调高 `context_timeout_seconds`**（会让每轮多一次 100K prefill，比不压缩还慢）。
+- 默认**先不加**，试 q8_0 让慢请求能跑完，不够再拍板 A/B。
+
+### 第 8 步：落地归档
+
+- 新模型实测数据（decode / prefill / 内存 / 窗口）写回对应的 `CURRENT_CONFIG.md` + `A_B实测对比报告.md` + `TROUBLESHOOTING.md`，并 `git push` 到仓库，**别只留在本地**。
+
