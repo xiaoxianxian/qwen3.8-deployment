@@ -216,9 +216,9 @@ sqlite3 "$HOME/Library/Application Support/Ollama/db.sqlite" \
 open -a Ollama && sleep 10 && ollama ps
 ```
 
-**Pick by RAM**: 48 GB → **32768**; 32 GB → 16384; only ≥64 GB should consider 131072. **262144 always evicts on 48 GB.**
+**Pick by RAM (long-chat only, no agent)**: 48 GB → **32768**; 32 GB → 16384; only ≥64 GB should consider 131072. **But if you connect any agent client (Hermes / Claude Desktop / Cursor / Codex with tool use), 64 K overflows and truncates in real long sessions — set the model max 262144** (this machine: 65536 was not enough, 262144 is stable). **"262144 always evicts on 48 GB" was a misread of a contention log; a single model runs fine at 262144.**
 
-> **Exception: use 65536 when the client has a 64 K floor.** Hermes Agent hard-rejects anything below 64 K (`MINIMUM_CONTEXT_LENGTH = 64_000`), failing with `below the minimum 64,000 required by Hermes Agent`. Such clients also need `model.context_length` **and** `model.ollama_num_ctx` raised. Note that **the `/v1` endpoint ignores the request-level `num_ctx`**, so the server window stays where it was — both sides must change. Full walkthrough: `TROUBLESHOOTING.md` §12.
+> **Agent clients must use the model max 262144, not 65536.** Hermes Agent hard-rejects anything below 64 K (`MINIMUM_CONTEXT_LENGTH = 64_000`) — so 32768 won't even start. But 64 K is only the *startup* floor; real agent sessions (tool outputs + multi-turn history) blow past 64 K and get silently truncated, breaking tool calls. This machine: 65536 was still not enough, 262144 is stable. Such clients also need `model.context_length` **and** `model.ollama_num_ctx` raised to 262144. Note that **the `/v1` endpoint ignores the request-level `num_ctx`**, so the server window stays where it was — both sides must change. Full walkthrough: `TROUBLESHOOTING.md` §12.
 
 > Why bigger isn't better: the window is a **capacity** knob, not a **speed** knob. This machine prefills at 348–383 tok/s, so a 32 K prompt costs ~88 s just to read in, and 78 K costs ~217 s. Daily chat and coding rarely need more than 10 K.
 

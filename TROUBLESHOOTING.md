@@ -377,14 +377,15 @@ curl -s --noproxy '*' http://127.0.0.1:11434/api/ps
 pkill -f "/Applications/Ollama.app"
 #    注意：本机 osascript -e 'quit app "Ollama"' 会报 -10004 权限违例（TCC），用 pkill
 sqlite3 "$HOME/Library/Application Support/Ollama/db.sqlite" \
-  "update settings set context_length=65536 where id=1;"
+  "update settings set context_length=262144 where id=1;"
 open -a Ollama && sleep 10
 curl -s --noproxy '*' http://127.0.0.1:11434/api/ps | grep -o '"context_length":[0-9]*'
-# → "context_length":65536
+# → "context_length":262144
 
-# 2) 客户端（Hermes）两个键一起改
-hermes config set model.context_length 65536
-hermes config set model.ollama_num_ctx 65536
+# 2) 客户端（Hermes）两个键一起改（取模型上限 262144：64K 在真实 agent 长会话下仍会
+#    溢出，开到最大才留得出余量。注意这只是容量，不保护你免遭超窗 prompt）
+hermes config set model.context_length 262144
+hermes config set model.ollama_num_ctx 262144
 ```
 
 **验收**（两条都要过）：
@@ -392,25 +393,27 @@ hermes config set model.ollama_num_ctx 65536
 ```bash
 hermes -m qwen3.8:27b-mlx -z "只回复两个字：正常"     # → 正常
 grep context_pin ~/.hermes/logs/agent.log | tail -1
-# → context_pin: model.context_length pins qwen3.8:27b-mlx at 65,536 tokens ...
+# → context_pin: model.context_length pins qwen3.8:27b-mlx at 262,144 tokens ...
 #    （出现这行说明配置已生效；同时 errors.log 不再有新 ValueError）
 ```
 
 ### 三个踩过的坑
 
-1. **Ollama.app 运行中改 db 会被内存值写回**。实测一次把 65536 顶成了 262144（模型上限）。必须**先退出 app → 改库 → 再启动**。
+1. **Ollama.app 运行中改 db 会被内存值写回**。app 启动时会把库里的 `context_length` 拉到它自己的内存值，所以必须**先退出 app → 改库 → 再启动**，否则改动被旧内存值覆盖。本机最终定值取模型上限 262144（即"开到最大"）。
 2. **`com.ollama.serve.plist` 里的 `OLLAMA_CONTEXT_LENGTH` 是死配置**，该 launchd 服务从未被加载（`launchctl print` 报 `Could not find service`），改它不产生任何效果，只作记录。别以为改了 plist 就好了。
-3. **窗口能设多大 ≠ 能跑**。MLX runner 并不按 `num_ctx` 截断：实测 `context_length: 65536` 下仍出现过 **120071 token** 的 prompt 被全量 prefill。所以抬到 64K 只解决"能不能启动"，**单轮输入仍要压在 1 万 token 内**（见 §9）。
+3. **窗口能设多大 ≠ 能跑，且 64K 本身不够用**。MLX runner 并不按 `num_ctx` 截断：实测 `context_length: 65536` 下仍出现过 **120071 token** 的 prompt 被全量 prefill，真实 agent 长会话（工具输出 + 多轮历史）也常突破 64K 被静默截断、工具调用崩溃——所以必须**开到模型上限 262144** 才留得出余量。但窗口大 ≠ 能塞：**单轮输入仍要压在 1 万 token 内**（见 §9），否则一次 prefill 几十秒起步。
 
 ### 为什么 64K 在 48 GB 上装得下
 
 这代 27B 是**混合线性注意力**架构：64 层里只有 16 层是全注意力（`full_attention_interval=4`，4 KV heads × head_dim 256），其余 48 层是线性注意力、状态与序列长度无关。所以 bf16 KV 只有约 **64 KiB/token**——比同样参数量的纯注意力模型小一个量级。
 
-| 上下文 | KV 估算（bf16） | 实测 `/api/ps` |
+| 上下文 | KV 估算（bf16，仅全注意力部分） | 实测 `/api/ps` |
 |---|---|---|
 | 空闲（仅权重） | 0 | 16.9 GiB |
 | 65536（跑完一轮会话） | ~4 GiB | 30.0 GiB |
-| 262144（满窗） | ~16 GiB | —— 48 GB 上必然 evict |
+| 262144（满窗理论上限） | ~16 GiB | 当前实跑 27.4 GiB vram，正常（未 evict） |
+
+> ⚠️ **修正早前误判**："262144 在 48 GB 必然 evict" 是对一次争用场景日志的误读。MLX 的 KV **按实际用量动态分配**（不是启动预占满窗 16 GiB），单模型正常开到 262144 能跑；只有真塞到接近满窗才会 spill swap。当前本机即以此值稳定运行。
 
 而且 MLX 的 KV 是**按实际用量动态分配**的（不是启动时一次性预占），所以抬窗口本身几乎不花钱，真正的成本是"你真的塞了多长的 prompt"。
 

@@ -230,9 +230,9 @@ sqlite3 "$HOME/Library/Application Support/Ollama/db.sqlite" \
 open -a Ollama && sleep 10 && ollama ps
 ```
 
-**按内存选值**：48 GB → **32768**；32 GB → 16384；≥64 GB 才考虑 131072。**262144 在 48 GB 上必然 evict。**
+**按内存选值（仅作无 agent 的长对话参考）**：48 GB → **32768**；32 GB → 16384；≥64 GB 才考虑 131072。**但凡接 agent（Hermes / Claude Desktop / Cursor / Codex 等带工具调用的客户端），64K 在真实长会话下仍会溢出截断，直接开到模型上限 262144**（本机实测 65536 不够、262144 才稳定）。**"262144 必然 evict" 是早前对争用日志的误读，单模型实跑正常。**
 
-> **例外：客户端有 64K 下限时必须设 65536。** Hermes Agent 把 64K 做成硬门槛（`MINIMUM_CONTEXT_LENGTH = 64_000`），低于它就拒绝启动，报 `below the minimum 64,000 required by Hermes Agent`。这类客户端还要同步改两处：`model.context_length` + `model.ollama_num_ctx`。注意 **`/v1` 端点会忽略请求里的 `num_ctx`**，所以客户端改完服务端窗口仍是旧的——两边都得改。完整排查见 `TROUBLESHOOTING.md` §12。
+> **接 agent 客户端必须开到最大 262144（不是 65536）。** Hermes Agent 把 64K 做成硬门槛（`MINIMUM_CONTEXT_LENGTH = 64_000`），低于它就拒绝启动，报 `below the minimum 64,000 required by Hermes Agent`——所以 32768 不可用。但 64K 只是"能启动"的下限，**真实 agent 长会话（工具输出 + 多轮历史）会突破 64K 被静默截断、工具调用崩**，本机实测 65536 仍不够、开到模型上限 262144 才稳定。这类客户端要同步改两处：`model.context_length` + `model.ollama_num_ctx`（都取 262144）。注意 **`/v1` 端点会忽略请求里的 `num_ctx`**，所以客户端改完服务端窗口仍是旧的——两边都得改。完整排查见 `TROUBLESHOOTING.md` §12。
 
 > 为什么不是越大越好：窗口是**容量**旋钮，不是**速度**旋钮。本机预填充 348–383 tok/s，32 K prompt 光读入就要 88 秒、78 K 要 217 秒。日常对话和改代码根本用不到 1 万以上。
 
