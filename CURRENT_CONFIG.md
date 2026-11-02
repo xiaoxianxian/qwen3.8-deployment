@@ -62,13 +62,22 @@ ollama:
 
 ## 环境变量配置
 
-本机实测（2026-11-02）：`OLLAMA_CONTEXT_LENGTH` / `OLLAMA_FLASH_ATTENTION` / `OLLAMA_KV_CACHE_TYPE` / `OLLAMA_KEEP_ALIVE` 经 `launchctl getenv` **全为空**，即当前完全没靠环境变量，配置由 GUI 设置 + 模型自带默认值驱动。
+> ⚠️ **血泪教训（2026-11-02）**：Ollama.app 是独立 GUI 进程，**不读 shell 环境**（`.zshrc` 里 export 的变量它收不到）。本机前几个月写在 shell 里的 `OLLAMA_KV_CACHE_TYPE` / `OLLAMA_FLASH_ATTENTION` / `OLLAMA_NUM_BATCH` / `OLLAMA_KEEP_ALIVE` 等于**从没生效过**——直到 2026-11-02 用 `launchctl setenv` + LaunchAgent plist 才真正注入。**正确方式**：`~/Library/LaunchAgents/com.user.ollama-env.plist`（登录自动注入）或当次 `launchctl setenv`，再重启 Ollama 生效。
 
-> ✅ **关闭 Hermes 对本地长请求的主动 abort（执行层不拦截）**：`HERMES_STREAM_STALE_GIVEUP=0`（默认 5）。源码 `agent/chat_completion_local.py:stale_giveup()` 读此环境变量；连续 stale 次数 ≥ 阈值即立即 abort 整次调用（报错原文 "5 consecutive stale attempts — aborting this call"）。设为 0 关闭该断路器——之后本地长请求（大 prefill / 长会话）由模型侧自己慢跑或报错，Hermes 不再替你打断。写入 `~/.hermes/.env`，**重启 Hermes 生效**。配套：`agent.local_stream_stale_timeout`（默认 900s）是单次请求静默宽限，56K/156K 的 prefill（3–7 分钟）远在其内，一般无需改；只有单请求可能超过 15 分钟才需要抬高它。
+**结论修正（2026-11-02）**：环境变量这条路**不是堵死的**——本机在自己终端里 `launchctl setenv OLLAMA_KV_CACHE_TYPE q8_0` 成功（`getenv` 立即返回 `q8_0`），重启 Ollama 即生效；持久化靠 LaunchAgent plist。只是**不能走 shell 的 `.zshrc`**（Ollama.app 不读）。
 
-**先说结论：这台机器上，环境变量这条路是堵死的，而且有两个变量本来就没用。**
+**四个关键变量（48GB + 262144 + 本地 27B 必选项）**：
 
-### 1) `OLLAMA_FLASH_ATTENTION` / `OLLAMA_KV_CACHE_TYPE` 对 MLX 后端无效
+| 变量 | 值 | 为什么 |
+|------|-----|--------|
+| `OLLAMA_KV_CACHE_TYPE` | `q8_0` | **最关键**。262144 上下文下 f16 KV cache 约 50GB > 48GB → swap 至死、永久 loading；q8_0 砍半到 ~25GB，装得进 48GB，长请求能跑完 |
+| `OLLAMA_KEEP_ALIVE` | `-1` | 模型常驻不卸载，免每次对话重载（长会话反复重载也拖慢） |
+| `OLLAMA_NUM_BATCH` | `2048` | prefill 提速（batch 512→2048 少 forward pass），大 prompt 受益明显 |
+| `OLLAMA_FLASH_ATTENTION` | `1` | MLX 后端内置常开，变量基本 no-op，写上无妨 |
+
+> ✅ **关闭 Hermes 对本地长请求的主动 abort（执行层不拦截）**：`HERMES_STREAM_STALE_GIVEUP=0`（默认 5）。源码 `agent/chat_completion_local.py:stale_giveup()` 读此环境变量；连续 stale 次数 ≥ 阈值即立即 abort 整次调用（报错原文 "5 consecutive stale attempts — aborting this call"）。设为 0 关闭该断路器——之后本地长请求（大 prefill / 长会话）由模型侧自己慢跑或报错，Hermes 不再替你打断。写入 `~/.hermes/.env`，**重启 Hermes 生效**。配套：`agent.local_stream_stale_timeout`（默认 900s）是单次请求静默宽限，正常 prefill 远在其内，一般无需改（详见下方「Hermes 历史压缩」）。
+
+### 1) 结论修正：`OLLAMA_KV_CACHE_TYPE=q8_0` 在 MLX 上必须开（旧结论「对 MLX 无效」已作废）
 
 Ollama 源码把这两个值只交给 llama.cpp 引擎：
 
@@ -79,38 +88,48 @@ return NewLlamaServerRunner(gpus, modelPath, f, adapters, projectors, opts, numP
 ```
 
 `NewLlamaServerRunner` 在 `llm/llama_server.go` 里把它转成 `--cache-type-k/--cache-type-v` 传给 llama-server。
-**MLX runner 是另一条路径，根本不接收这个参数**，它自己管理 KV。
+**但 0.40.13 的 MLX runner 也读 `OLLAMA_KV_CACHE_TYPE`**（本机 2026-11-02 实测生效）；Ollama 源码里 `kvct` 那段只描述 llama.cpp 路径，不代表 MLX 忽略该变量。
 
-本机实测印证（2026-11-02，同一台机、两套配置对比启动日志）：
+历史实测（0.40.11 / 32K 小窗口，正是「无效」误判的来源）：
 
 | 引擎 | 模型 | 参数 | KV 占用 |
 |---|---|---|---|
 | llama.cpp | `qwen3:4b` | 默认 f16 | `4608 MiB (K f16 2304 + V f16 2304)` |
 | llama.cpp | `qwen3:4b` | `KV_CACHE_TYPE=q8_0` + `FA=1` | `2448 MiB (K q8_0 1224 + V q8_0 1224)`，省 2.16 GB |
-| **MLX** | **`qwen3.8:27b-mlx`** | **`KV_CACHE_TYPE=q8_0`** | **与 f16 无差别**（18 GB 权重，32K 填充后 25–32 GB，两边一致） |
+| ⚠️ **MLX（旧）** | **`qwen3.8:27b-mlx`** | **`KV_CACHE_TYPE=q8_0`** | 与 f16 **看不出差别**（18 GB 权重，32K 填充后 25–32 GB，两边一致）——**只因窗口太小没撑爆内存**；262144 大窗口下 q8_0 才显出收益（见下） |
 
-⇒ **本机跑 27B 走 MLX，这两个变量开了等于没开**。想给 27B 省内存，唯一旋钮是**降低上下文**（KV 在 MLX 里是 f16 且不可量化）。
-⇒ 反过来，如果哪天跑的是 GGUF 模型（`qwen3:4b`、`*-q5` 等 llama.cpp 路径），这两个变量是**实打实省一半 KV**。
+⇒ **修正（2026-11-02，0.40.13 实测）**：本地 27B 走 MLX，**这两个变量必须开 `q8_0`**——262144 大窗口下 f16 KV ~50GB > 48GB 会 swap 至死，q8_0 砍半到 ~25GB 才装得进、长请求才跑得完（server 日志 `OLLAMA_KV_CACHE_TYPE:q8_0` 实锤）。旧文档"开了等于没开"是 0.40.11 小窗口下的误判，已作废。GGUF/llama.cpp 路径同样省一半 KV。KV 在 MLX 里**可量化**（q8_0 生效），并非"不可量化"。
 
-### 2) 想持久化 env：本机三条路全被系统阻断
+### 2) 持久化 env：本机用 LaunchAgent plist（已验证可用）
 
-2026-11-02 逐条实测：
+2026-11-02 实测：`launchctl setenv` 在 WorkBuddy 沙箱里报 `Not privileged`（沙箱不在 GUI 登录会话），但**在你自己的终端里直接跑 `launchctl setenv OLLAMA_KV_CACHE_TYPE q8_0` 等是成功的**（`getenv` 立即返回 `q8_0`），重启 Ollama 即生效。持久化写 plist：
 
-| 方式 | 结果 |
-|---|---|
-| `launchctl setenv` | `Not privileged to set domain environment`（macOS 27 收紧） |
-| `launchctl bootstrap` / `load -w` | `Bootstrap failed: 5: Input/output error`（连最小 `/bin/echo` plist 都失败，与 plist 内容无关） |
-| `launchctl submit` | 静默失败，job 不进域 |
-| `open -a Ollama --env VAR=...` | App 进程收到，但 server 子进程不继承（server 的 env 由它自己重建） |
+```bash
+# ~/Library/LaunchAgents/com.user.ollama-env.plist（ProgramArguments: /bin/sh -c "launchctl setenv ...; open -a Ollama"）
+launchctl load ~/Library/LaunchAgents/com.user.ollama-env.plist   # 立即注入 + 开机自动
+killall Ollama && sleep 2 && open -a Ollama                       # 重启生效（osascript quit 遇 TCC 违例时改用 killall）
+```
 
-⇒ 结论：**能持久生效的只有 GUI 的 `settings.context_length`**。其余变量只能手动 `env ... ollama serve` 起一次、当次有效。
-⇒ 副作用：Ollama.app 一打开就会杀掉手动起的 serve、换回自己的（实测 pid 从 1383 变 6420），所以手动起的那套只适合「不开 GUI」的用法。
+⇒ 结论：**GUI 的 `settings.context_length` 之外，其余 Ollama 变量也能持久生效**，关键是走 `launchctl`（用户会话域）或 LaunchAgent，**别走 shell 的 `.zshrc`**（Ollama.app 不读）。
 
 | 事项 | 说明 |
 |------|------|
-| `OLLAMA_KEEP_ALIVE` | 本机冷重载实测只需 2.5–6 s，5 分钟默认值够用，不值得为它换掉 GUI |
+| `OLLAMA_KEEP_ALIVE` | 已设 `-1`（Forever）常驻，免重载。冷重载本身只需 2.5–6 s，但长会话反复重载也拖慢，常驻更稳 |
 | `OLLAMA_MAX_LOADED_MODELS` | 想设 `1` 防止多个模型同驻；同样受上面限制，改用「不用 `qwen3:4b` 就不会加载它」规避 |
 | `OLLAMA_NUM_PARALLEL` | 已是 `1`（单用户最优）。调大等于按倍数分配 KV，48 GB 扛不住 |
+
+## Hermes 历史压缩（本地部署必看——"又卡又慢"的真正根因）
+
+> ⚠️ **2026-11-02 定论**：之前所有"卡/慢/loading"的归因（窗口过大、KV swap、q8_0 没开）都只解决了一半。**真正的元凶是 Hermes 的历史从未被压缩过**。Hermes 内置 `ContextCompressor`（`agent/context_compressor.py`），用比例制对上下文窗口算预算（如 `threshold=0.3` → 78K 触发、`target_ratio=0.2` → 目标 ~15K）；但它依赖一个**摘要模型**来总结旧历史。本地-only 部署下，这个摘要模型在 120s preflight 超时（`⚠ Context compression timed out after 120.0s with no output from the summary model. No messages were dropped — continuing without compression`），**压缩失败 → 每轮都把完整 100K+ 历史原样发给模型** → prefill 几分钟 → 看起来"一直 loading"。
+>
+> 为什么本地修不了：摘要模型本身要处理 100K+ token，在本地 27B 上跑必然超过 120s prefill，指向本地模型只会更慢（两个本地调用抢单 GPU）。所以 **LLM 历史压缩在纯本地部署下结构性失效**。
+>
+> **三条出路（任选，不互斥）**：
+> 1. **云端快速摘要模型**（推荐，能让压缩真正生效）：把 `auxiliary.compression` 指向已配 key 的云端模型（本机有 `DEEPSEEK_API_KEY` / `HERMES_CUSTOM_AGNES_API_KEY`），摘要几秒完成，历史被压到 ~15K，**请求从 100K+ 降到 20K 内，prefill 从几分钟降到 ~1 分钟**。代价：历史片段出机器（与你本地隐私取向有冲突，需权衡）。
+> 2. **本地保持短会话**：不依赖 LLM 压缩，靠 `micro_compact`（每轮折叠旧工具结果，无 LLM 调用，已开） + 手动 `/new` 或 `/compress` 周期性开新会话，把历史压在可控范围。最省事但需你主动管理。
+> 3. **接受 q8_0 让慢请求能跑完**：q8_0 已解决"swap 至死"，100K 请求现在能跑完而非永久卡死；只是仍慢。配合 `HERMES_STREAM_STALE_GIVEUP=0` 不拦截，符合"执行层不替你打断"。
+>
+> `micro_compact` 与上面的 LLM 压缩是两件事：前者只折叠旧工具返回（不缩减对话轮次），后者才真正摘要对话历史。本地-only 下只有前者在跑，所以对话文本会无界增长 → 100K+ 每轮。详见 `TROUBLESHOOTING.md` §「一直 loading / 又卡又慢 真实根因链」。
 
 ## 硬件需求
 
@@ -120,7 +139,7 @@ return NewLlamaServerRunner(gpus, modelPath, f, adapters, projectors, opts, numP
 | 芯片 | Apple Silicon（M 系列） |
 | 磁盘空间 | 建议 30 GB+（含 Ollama 运行时） |
 
-## 性能基准（M5 Pro 48GB / Ollama 0.40.11 / macOS 27.2 实测）
+## 性能基准（M5 Pro 48GB / Ollama 0.40.13 / macOS 27.2 实测）
 
 | 指标 | 实测值 |
 |------|--------|
@@ -147,7 +166,7 @@ return NewLlamaServerRunner(gpus, modelPath, f, adapters, projectors, opts, numP
 
 | 工具 | 状态 | 版本 |
 |------|------|------|
-| Ollama（Ollama.app 托管，GUI 拉起 server） | ✅ 运行中 | 0.40.11 |
+| Ollama（Ollama.app 托管，GUI 拉起 server） | ✅ 运行中 | 0.40.13 |
 | Python | ✅ | 3.11.x |
 | pip | ✅ | 24.x |
 
@@ -156,7 +175,7 @@ return NewLlamaServerRunner(gpus, modelPath, f, adapters, projectors, opts, numP
 ## 注意事项
 
 1. **MLX 不识别 GGUF**：必须用原生 MLX 格式（`ollama pull qwen3.8:27b-mlx`）。
-2. **不要手动加 `draft_num_predict`**：0.40.11 的 MLX runner **已默认自适应投机解码**，官方标签原样最快。本机对拍：官方标签 34.9 tok/s vs 手动加 `draft_num_predict 3` 只有 28.0 tok/s。此项仅对 GGUF 路线仍需显式开启（见 `TROUBLESHOOTING.md` §5）。
+2. **不要手动加 `draft_num_predict`**：0.40.13 的 MLX runner **已默认自适应投机解码**，官方标签原样最快。本机对拍：官方标签 34.9 tok/s vs 手动加 `draft_num_predict 3` 只有 28.0 tok/s。此项仅对 GGUF 路线仍需显式开启（见 `TROUBLESHOOTING.md` §5）。
 3. **`iogpu.disable_wired_collector=1` 重启失效**：治「空闲后首个请求要重新从 swap 页入权重」，开机需重跑一次 `sudo sysctl iogpu.disable_wired_collector=1`。
 4. **使用 127.0.0.1 而非 localhost**：避免代理与 IPv6 路由问题。
 5. **跨版本测试 Ollama 必须隔离模型目录**：旧版二进制启动 GC 会清空新版模型库，见 `TROUBLESHOOTING.md` §11。

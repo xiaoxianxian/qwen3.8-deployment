@@ -7,7 +7,7 @@ title: 完整部署方案
 
 面向 macOS Apple Silicon 用户的本地大模型部署教程：基于 M5 Pro / 48GB 实测，覆盖 Ollama + MLX 与 GGUF 量化方案对比、MTP 投机解码加速、国内镜像下载与完整避坑。
 
-> **最后验证：2026-11-02** · Ollama 0.40.11 · macOS 27.2（M5 Pro / 48GB 实测）
+> **最后验证：2026-11-02** · Ollama 0.40.13 · macOS 27.2（M5 Pro / 48GB 实测）
 > 适用版本：**Ollama ≥ 0.30**。更早版本存在 MLX 大上下文超时 bug（[问题 2](./TROUBLESHOOTING.md#2-mlx-超时-500-context-canceled)），动手前先确认版本。
 >
 > **0.40 起有三处行为变化，照更早的教程抄会踩坑**（2026-11-02 实测）：
@@ -241,11 +241,11 @@ open -a Ollama && sleep 10 && ollama ps
 | 变量 | 作用 | 建议 |
 |------|------|------|
 | `OLLAMA_CONTEXT_LENGTH` | 全局默认上下文 | **不推荐**：被 GUI 设置覆盖，设了也白设 |
-| `OLLAMA_FLASH_ATTENTION=1` | 长上下文提速 | **对 MLX 无效**：该值只传给 llama.cpp 引擎（`llm/server.go` → `NewLlamaServerRunner`），MLX runner 用自己的 attention 实现 |
-| `OLLAMA_KV_CACHE_TYPE=q8_0` | KV 缓存量化省内存 | **对 27B（MLX）无效**：源码里 `kvct` 只进 llama.cpp 路径。对 GGUF 模型实测有效：`qwen3:4b` KV 从 4608 → 2448 MiB |
-| `OLLAMA_KEEP_ALIVE=30m` | 模型驻留 30 分钟 | 本机冷重载实测仅 2.5–6 s，默认 5 分钟够用 |
+| `OLLAMA_FLASH_ATTENTION=1` | 长上下文提速 | MLX 后端内置常开，变量基本 no-op，写上无妨 |
+| `OLLAMA_KV_CACHE_TYPE=q8_0` | KV 缓存量化省内存 | **对本机 27B（MLX）必须开**：0.40.13 实测生效（server 日志 `OLLAMA_KV_CACHE_TYPE:q8_0` 实锤）。262144 下 f16 KV ~50GB > 48GB 会 swap 至死，q8_0 砍半到 ~25GB 才装得进；对 GGUF 同样省一半 KV |
+| `OLLAMA_KEEP_ALIVE=-1` | 模型常驻不卸载 | 免每次对话重载（长会话反复重载也拖慢）；冷重载本身仅 2.5–6 s |
 
-> 想让环境变量持久化，本机**三条路都堵死**（2026-11-02 实测）：`launchctl setenv` 报 `Not privileged`；`launchctl bootstrap`/`load -w`/`submit` 全部 `5: Input/output error`（连最小 `/bin/echo` plist 也失败）；`open --env` 传不到 server 子进程。**能持久生效的只有 GUI 的 `context_length`**。
+> 想让环境变量持久化：走 `launchctl setenv`（在本人终端里直接跑即成功，`getenv` 立即返回；重启 Ollama 生效）或写 LaunchAgent plist `~/Library/LaunchAgents/com.user.ollama-env.plist`（登录自动注入、跨重启持久）。**别走 shell 的 `.zshrc`**——Ollama.app 是独立 GUI 进程，不读 shell 环境，写在 shell 里等于没设。
 
 ### 第七步：验证安装
 
@@ -429,7 +429,7 @@ MLX 原生版 `qwen3.8:27b-mlx` 自带视觉投影，直接发图即可，无需
 
 > ⚠️ **「装得下」不等于「快」**：容量上限与速度无关，真实等待时间由 **单轮 prompt token 数** 决定。本机预填充 348–383 tok/s，**32 K prompt 光读入就要 88 秒、78 K 要 217 秒、156 K 要 ~7 分钟**。所以窗口开到 262144 给长会话留缓冲是对的，但**单轮输入仍要压在 ~1 万 token 以内**（控制 file_read_max_chars / tool_output / 历史裁剪），否则一次 prefill 就几分钟，Ollama 单并发会把后续请求全堵死。
 
-- 日常单跑 / 短中交互：直接用 `qwen3.8:27b-mlx`（MLX），窗口 32768，最快最稳。
+- 日常单跑 / 短中交互：直接用 `qwen3.8:27b-mlx`（MLX），窗口沿用 GUI 的 262144（本机实测稳定）；只有多引擎同驻、内存吃紧时才临时下调到 32768/65536。
 - 长 agent 多会话并发：改用 `qwen3.8-q5`（GGUF + llama.cpp，并发更稳）；GSQ IQ3 同为 llama.cpp 路径，并发表现与 Q5 一致，但体积更小、速度更慢。
 - 别让 Hermes 与 WorkBuddy 同时并发调 MLX，错峰即可。
 

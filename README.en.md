@@ -7,7 +7,7 @@ title: English Guide
 
 A practical local-LLM deployment guide for macOS Apple Silicon users, based on real-world testing on an M5 Pro / 48GB. Covers the Ollama + MLX vs GGUF quantization comparison, MTP speculative-decoding acceleration, China-region mirror downloads, and a full troubleshooting playbook.
 
-> **Last verified: 2026-11-02** · Ollama 0.40.11 · macOS 27.2 (M5 Pro / 48GB)
+> **Last verified: 2026-11-02** · Ollama 0.40.13 · macOS 27.2 (M5 Pro / 48GB)
 > Supported: **Ollama ≥ 0.30**. Earlier versions have an MLX large-context timeout bug (see [Issue 2](./TROUBLESHOOTING.md#2-mlx-超时-500-context-canceled)); check your version before starting.
 >
 > **Three behavior changes since 0.40 — older tutorials will mislead you** (verified 2026-11-02):
@@ -222,16 +222,17 @@ open -a Ollama && sleep 10 && ollama ps
 
 > Why bigger isn't better: the window is a **capacity** knob, not a **speed** knob. This machine prefills at 348–383 tok/s, so a 32 K prompt costs ~88 s just to read in, and 78 K costs ~217 s. Daily chat and coding rarely need more than 10 K.
 
-**Env var reference (most are unnecessary on this setup):**
+**Env var reference (4 are mandatory on 48GB + 262144 + local 27B):**
 
-| Variable | Effect | Recommendation |
-|----------|--------|----------------|
-| `OLLAMA_CONTEXT_LENGTH` | global default context | **Not recommended**: overridden by the GUI setting anyway |
-| `OLLAMA_FLASH_ATTENTION=1` | long-context speedup | **No effect on MLX**: the value is only passed to the llama.cpp engine (`llm/server.go` → `NewLlamaServerRunner`); MLX uses its own attention kernels |
-| `OLLAMA_KV_CACHE_TYPE=q8_0` | quantize KV cache to save RAM | **No effect on the 27B (MLX)**: `kvct` only reaches the llama.cpp path. Does work for GGUF: `qwen3:4b` KV went 4608 → 2448 MiB |
-| `OLLAMA_KEEP_ALIVE=30m` | keep model resident 30 min | Cold reload measured at only 2.5–6 s; the 5-min default is fine |
+| Variable | Value | Why |
+|----------|-------|-----|
+| `OLLAMA_CONTEXT_LENGTH` | — | **Not recommended**: overridden by the GUI setting anyway |
+| `OLLAMA_FLASH_ATTENTION` | `1` | Built-in on the MLX backend, effectively a no-op; harmless to set |
+| `OLLAMA_KV_CACHE_TYPE` | `q8_0` | **Critical**, verified working on Ollama 0.40.13 (server log shows `OLLAMA_KV_CACHE_TYPE:q8_0`). At 262144, f16 KV is ~50 GB > 48 GB → swap to death and long requests never return; q8_0 halves it to ~25 GB so 100K+ token requests actually finish. Also halves KV for GGUF (`qwen3:4b`: 4608 → 2448 MiB) |
+| `OLLAMA_KEEP_ALIVE` | `-1` | Keep the model resident (no reload every turn); cold reload alone is only 2.5–6 s |
+| `OLLAMA_NUM_BATCH` | `2048` | Faster prefill (fewer forward passes than the 512 default); big prompts benefit most |
 
-> Persisting these env vars is **blocked on this machine** (verified 2026-11-02): `launchctl setenv` returns `Not privileged`; `launchctl bootstrap`/`load -w`/`submit` all fail with `5: Input/output error` (even a minimal `/bin/echo` plist); `open --env` does not reach the server subprocess. **Only the GUI `context_length` persists.**
+> **Blood lesson (2026-11-02)**: Ollama.app is a standalone GUI process and **does not read shell env** — anything exported in `.zshrc` never reaches it. These vars were effectively **never active** for months; they only took effect after `launchctl setenv` + a LaunchAgent plist. Persist via `~/Library/LaunchAgents/com.user.ollama-env.plist` (auto-injected at login), or run `launchctl setenv` in your own terminal for the current session, then restart Ollama. `launchctl setenv` returns `Not privileged` **only inside the WorkBuddy sandbox** (which is not your GUI login session) — the old "all three persistence paths are blocked" conclusion was a sandbox artifact and is retracted.
 
 ### Step 7: Verify the install
 
@@ -346,7 +347,7 @@ Single runs won't. In the 2026-09-10 A/B, MLX at 131072 context passed 10/10 on 
 
 > ⚠️ **"It fits" is not the same as "it's usable"**: a capacity ceiling is unrelated to speed; real latency is set by **per-turn prompt tokens**. This machine prefills at 348–383 tok/s, so **a 32 K prompt costs ~88 s just to read in, 78 K ~217 s, 156 K ~7 min**. Opening the window to 262144 for long-session headroom is correct, but **keep each turn's input under ~10 K tokens** (tune file_read_max_chars / tool_output / history trimming) — otherwise one prefill takes minutes and Ollama's single concurrency blocks everything behind it.
 
-- Daily single run / short-mid interaction: `qwen3.8:27b-mlx` (MLX) with a 32768 window — fastest and most stable.
+- Daily single run / short-mid interaction: `qwen3.8:27b-mlx` (MLX) on the GUI's 262144 window (verified stable on this box); lower to 32768/65536 only when a second inference engine is co-resident.
 - Long agent with concurrent sessions: switch to `qwen3.8-q5` (GGUF + llama.cpp, more stable concurrency); GSQ IQ3 shares the llama.cpp path with Q5 — same concurrency behavior, smaller but slower.
 - Don't let Hermes and WorkBuddy hit MLX concurrently; stagger them.
 

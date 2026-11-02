@@ -21,5 +21,7 @@
 - **上下文长度**：真正开关是 Ollama.app 设置（`db.sqlite` 的 `settings.context_length`），优先级高于 Modelfile 的 `num_ctx`；**本机 48 GB 实测 262144 稳定**（MLX KV 动态分配，idle ~18–31GB）。窗口是容量不是速度——本机预填充 348–383 tok/s，32K prompt 光读入就要 88 秒，日常可用输入约 1 万 token
 - 引擎选型：2026-10-03 实测，替换用的 MTPLX 引擎长文吞吐反而比 Ollama 慢 14%（其裸解码仅 Ollama 四成）；**日常维持 Ollama**。2026-11-02 曾因误判「MLX runner 病态」临时切过 MTPLX，已推翻并完全卸载
 - 省显存方案：GSQ-RCO IQ3_S（约 12GB，质量基本无损），适合同机还跑视频模型、显存吃紧的场景
+- **48GB + 262144 必开 `OLLAMA_KV_CACHE_TYPE=q8_0`**（0.40.13 实测生效）：f16 KV ~50GB 会 swap 至死、10 万+ token 请求永久 loading；q8_0 砍半后以 ~227 tok/s 稳跑完。配 `OLLAMA_KEEP_ALIVE=-1` / `OLLAMA_NUM_BATCH=2048`。**Ollama.app 不读 `.zshrc`**，必须 `launchctl setenv` 或 LaunchAgent plist 才生效（详见 `CURRENT_CONFIG.md`）
+- **Hermes 长会话「一直 loading」的第二层根因**：压缩器依赖摘要模型，本地-only 下 preflight 120s 超时 → `continuing without compression` → 每轮把完整 100K+ 历史原样发给模型。完整根因链见 `TROUBLESHOOTING.md` §13
 - 适用：macOS M1–M5、内存 ≥ 16GB（32GB 起流畅，48GB 为完整实测环境）；不适用：非 Apple Silicon、生产级多用户并发
-- 最后验证：2026-11-02 · Ollama 0.40.11 · macOS 27.2
+- 最后验证：2026-11-02 · Ollama 0.40.13 · macOS 27.2
