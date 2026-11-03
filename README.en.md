@@ -228,7 +228,7 @@ open -a Ollama && sleep 10 && ollama ps
 |----------|-------|-----|
 | `OLLAMA_CONTEXT_LENGTH` | — | **Not recommended**: overridden by the GUI setting anyway |
 | `OLLAMA_FLASH_ATTENTION` | `1` | Built-in on the MLX backend, effectively a no-op; harmless to set |
-| `OLLAMA_KV_CACHE_TYPE` | `q8_0` | **Critical**, verified working on Ollama 0.40.13 (server log shows `OLLAMA_KV_CACHE_TYPE:q8_0`). At 262144, f16 KV is ~50 GB > 48 GB → swap to death and long requests never return; q8_0 halves it to ~25 GB so 100K+ token requests actually finish. Also halves KV for GGUF (`qwen3:4b`: 4608 → 2448 MiB) |
+| `OLLAMA_KV_CACHE_TYPE` | — | **No-op on the MLX runner** (2026-11-04 triple A/B, same 0.40.13 binary, same 55K-token request: KV delta 2.87 GB with vs 2.85 GB without). MLX allocates KV dynamically (~53 KiB/token, full window ≈16 GB), so 262144 runs fine without it. Still genuinely effective on the GGUF/llama.cpp path (`qwen3:4b`: 4608 → 2448 MiB) |
 | `OLLAMA_KEEP_ALIVE` | `30m` | Keep the model resident for 30 minutes (cold reload alone is only 2.5–6 s). **2026-11-03 owner decision: `30m`** (matches the public article), not `-1` (which pins 25 GB idle VRAM forever). Gotcha when changing the value: `launchctl setenv` leaves the old value in the runtime env — after editing the plist you must `launchctl unload`+`load` or re-run `setenv` (see TROUBLESHOOTING §6) |
 | `OLLAMA_NUM_BATCH` | `2048` | Faster prefill (fewer forward passes than the 512 default); big prompts benefit most |
 

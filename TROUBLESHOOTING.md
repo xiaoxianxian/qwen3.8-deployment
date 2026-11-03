@@ -479,7 +479,7 @@ hermes resume
 ### 根因链（从表层到真凶）
 
 1. **窗口开到 262144 是用户的硬需求**（Hermes `MINIMUM_CONTEXT_LENGTH=64000` 硬门槛 + 64K/128K 在真实长会话仍溢出截断）。这一步本身没错，但它把"单轮 prompt 能有多大"的上限拉高了。
-2. **Ollama 优化项从没生效过**：`OLLAMA_KV_CACHE_TYPE` / `OLLAMA_FLASH_ATTENTION` / `OLLAMA_NUM_BATCH` / `OLLAMA_KEEP_ALIVE` 一直写在 shell 的 `.zshrc` 里，而 **Ollama.app 是独立 GUI 进程，不读 shell 环境** → 这些变量全等于没设。结果 262144 上下文下 KV cache 是 **f16（默认），约 50GB > 48GB** → 大请求一来就 **swap 至死、永久 loading**。
+2. **Ollama 优化项从没生效过**：`OLLAMA_KV_CACHE_TYPE` / `OLLAMA_FLASH_ATTENTION` / `OLLAMA_NUM_BATCH` / `OLLAMA_KEEP_ALIVE` 一直写在 shell 的 `.zshrc` 里，而 **Ollama.app 是独立 GUI 进程，不读 shell 环境** → 这些变量全等于没设。（⚠️ 11-04 归因修正：q8_0/FA 即便设了对 MLX 也是 no-op；f16 KV 实测 ≈53 KiB/token、262144 满窗 ~16GB，并不必然 swap 死——当时的 swap 死主要由 MTPLX 同驻 + 78K prompt 造成，见 §14。）
 3. **Hermes 的历史从未被压缩过（真凶）**：Hermes 内置 `ContextCompressor`（`agent/context_compressor.py`），比例制对窗口算预算（`threshold=0.3 → 78K 触发`，`target_ratio=0.2 → 目标 ~15K`）。但它依赖一个**摘要模型**总结旧历史；本地-only 部署下该摘要模型在 **120s preflight 超时**（`⚠ Context compression timed out after 120.0s with no output from the summary model. No messages were dropped — continuing without compression`），**压缩失败 → 每轮都把完整 100K+ 历史原样发给模型** → prefill 几分钟 → 看起来"一直 loading"。
    - 为什么本地修不了：摘要模型本身要处理 100K+ token，在本地 27B 上跑必然超过 120s，指向本地模型只会更慢（两个本地调用抢单 GPU）。**LLM 历史压缩在纯本地部署下结构性失效。**
 4. **stale 断路器把"慢"变成"报错"**：默认 `HERMES_STREAM_STALE_GIVEUP=5` 会在连续 5 次 stale 后主动 abort 整次调用（报错 "5 consecutive stale attempts — aborting this call"），于是早期表现是"报错退出"而非"卡住"。
@@ -489,14 +489,14 @@ hermes resume
 | 环节 | 解法 | 验证 |
 |------|------|------|
 | 优化项不生效（环 2） | 走 `launchctl setenv`（用户会话域）或 LaunchAgent plist `~/Library/LaunchAgents/com.user.ollama-env.plist`，再**重启 Ollama** | server 日志实锤 `OLLAMA_KV_CACHE_TYPE:q8_0` / `FLASH_ATTENTION:true`；KEEP_ALIVE 最终定 **`30m`**（老板 11-03 裁定，与公众号文章一致；此前救机时设的 `-1` 已作废） |
-| swap 至死（环 2→3 连接点） | `OLLAMA_KV_CACHE_TYPE=q8_0`：KV 砍半到 ~25GB，装得进 48GB，109K 请求从"swap 死"变"稳跑完（~227 tok/s 无 swap）" | 实测 109K 请求稳定 prefill 完、不再永久 loading |
+| swap 至死（环 2→3 连接点） | 🔴 11-04 归因修正：真修复是**停 MTPLX 第二引擎 + 砍单轮 prompt**；q8_0 对 MLX 经三组 A/B 实测 no-op（KV 增量 2.87 vs 2.85GB），「KV 砍半到 ~25GB」为错误估算 | 109K 请求稳定跑完属实，但功劳不在 q8_0 |
 | prefill 慢（环 3） | `OLLAMA_NUM_BATCH=2048` + `KEEP_ALIVE=30m`（驻留 30 分钟免重载） | 大 prompt prefill 提速、不再每次重载 |
 | 历史不压缩（环 3 真凶） | **三选一**：① 云端快速摘要模型（配 `auxiliary.compression` 指向已配 key 的 DeepSeek/agnes，历史被压到 ~15K，代价：历史出机器）；② 本地保持短会话（`micro_compact` 已开 + 手动 `/new` 或 `/compress`）；③ 接受 q8_0 让慢请求能跑完 | 见 `CURRENT_CONFIG.md`「Hermes 历史压缩」节 |
 | 慢被当错杀（环 4） | `HERMES_STREAM_STALE_GIVEUP=0`（写入 `~/.hermes/.env`，重启 Hermes 生效）：关闭主动 abort，慢就慢、报错就报错，反馈权交给模型侧 | 重启后 `errors.log` 零次 stale-abort |
 
 ### 补充实证（22:07 复核）：并发会话重试风暴才是「一直 loading」的表象
 
-q8_0 生效后單个请求其实**跑得动**——22:05–22:07 日志显示 55,614 token 请求以 ~227 tok/s 稳定 prefill、无 swap。但用户仍感觉「一直 loading」，因为：
+单个请求其实**跑得动**（与 q8_0 无关，11-04 A/B 定案）——22:05–22:07 日志显示 55,614 token 请求以 ~227 tok/s 稳定 prefill、无 swap。但用户仍感觉「一直 loading」，因为：
 
 ```
 agent.log 21:39–21:59：6+ 个不同 session 同时
@@ -540,8 +540,37 @@ hermes resume                        # 确认干净后恢复
 ### 一句话避坑
 
 - **Ollama 变量别写 shell，写 `launchctl` / LaunchAgent**，否则等于没设。
-- **本地 27B + 262144 必须开 `q8_0`**，否则 f16 KV 必 swap 死。
+- **本地 27B + 262144 不需要 `q8_0`**（11-04 三组 A/B 定案：对 MLX no-op；f16 KV 实测 ≈53 KiB/token、满窗 ~16GB 动态分配）；GGUF/llama.cpp 路线才需要。
 - **纯本地部署下 Hermes 的 LLM 历史压缩会超时失效**，要么用云端摘要模型、要么自己保持短会话——这是"又卡又慢"的最后一块拼图，别只盯着窗口和 KV。
 - 改配置后**重启对应进程才生效**（Ollama 重启加载 launchctl 变量；Hermes 重启加载 `.env`）；别杀 server 触发 Hermes 重发超大请求。
 
 清完 ollama 连接数应归零：`lsof -nP -i TCP:11434 | grep -c ESTABLISHED` → `0`。
+
+
+---
+
+## §14. 2026-11-04：Hermes 全瘫（/v1 超时 + /compress revision_conflict）——失控 turn 是真凶
+
+### 症状
+- Hermes 本地 ollama「调不动 / 一直加载」；`/compress` 报 `error: revision_conflict`；切换模型等会话操作全部失败。
+
+### 真因链（实测确认）
+1. gateway 内 **3 个 turn 僵尸化**（最长 4.6 小时无限重试），实际上下文滚到 10 万+ token → KV 实际占用涨到 28–34GB → 48GB 机器 swap 18GB+；
+2. `/v1` 40–180 秒超时 → 压缩拿不到 summary 模型 → 失败 + 冷却（`compression_failure_cooldown`）；
+3. 会话 revision 被失败重试反复推动 → 客户端 `expected_revision` 永远过期 → 任何 session.mutate（含 /compress、切换模型）报 `revision_conflict`；
+4. 恶性循环：卸载模型后 gateway 重试立刻重拉，系统永远缓不过来。
+
+### 诊断要点
+- `hermes gateway restart`（不带 `--yes`）会**列出所有活跃 turn 及运行时长**——僵尸 turn 一眼可见；
+- 优雅排水会等失控 turn 最多 **1800s**；直接 `kill -9 <gateway pid>` 让 supervisor 秒拉新实例最快；
+- `sysctl vm.swapusage` 看 swap；`tail ~/.ollama/logs/server.log` 看请求排队（单并发，`Prompt processing progress` 就是正在跑）。
+
+### 修复步骤（已验证）
+1. `hermes gateway restart --yes`（或强杀 gateway 进程）清失控 turn，会话 revision 全部刷新；
+2. 卸载模型释放内存：`curl -X POST localhost:11434/api/generate -d '{"model":"...","keep_alive":0}'`；
+3. 重启后旧会话标 `paused: unknown_execution`（正常保护）：对该会话发任意一条消息即恢复。
+
+### 重启后须知（11-04 补充）
+- 电脑重启后：Ollama.app 自启 server（context 从 GUI db 读）、Hermes Desktop 自启 gateway——基础设施无需手动干预；
+- 大请求（如 /compress 摘要 69K 历史）耗时 **5–6 分钟**，期间**单并发队列堵住其他一切操作**（含切模型），看起来「没反应」其实在跑；
+- 27B 本地速度基线：decode ~10–39 tok/s（MTP 投机解码生效时更高）、prefill 冷实例首次大请求 ~165 tok/s、热态 ~590 tok/s。

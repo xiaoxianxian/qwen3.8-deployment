@@ -242,7 +242,7 @@ open -a Ollama && sleep 10 && ollama ps
 |------|------|------|
 | `OLLAMA_CONTEXT_LENGTH` | 全局默认上下文 | **不推荐**：被 GUI 设置覆盖，设了也白设 |
 | `OLLAMA_FLASH_ATTENTION=1` | 长上下文提速 | MLX 后端内置常开，变量基本 no-op，写上无妨 |
-| `OLLAMA_KV_CACHE_TYPE=q8_0` | KV 缓存量化省内存 | **对本机 27B（MLX）必须开**：0.40.13 实测生效（server 日志 `OLLAMA_KV_CACHE_TYPE:q8_0` 实锤）。262144 下 f16 KV ~50GB > 48GB 会 swap 至死，q8_0 砍半到 ~25GB 才装得进；对 GGUF 同样省一半 KV |
+| `OLLAMA_KV_CACHE_TYPE=q8_0` | KV 缓存量化省内存 | 🔴 **MLX 路线不必设（2026-11-04 三组 A/B 定案：同请求 KV 增量 2.87 vs 2.85GB，纯 no-op）**。262144 在 MLX 下靠 KV 动态分配（≈53 KiB/token）稳定，无需量化；**GGUF/llama.cpp 路线仍真实有效**（qwen3:4b 实测省 2.16GB） |
 | `OLLAMA_KEEP_ALIVE=30m` | 模型驻留 30 分钟再卸载 | 免每次对话重载（冷重载本身仅 2.5–6 s）。**2026-11-03 老板定 30m**（与公众号文章一致），不用 `-1`（永久占 25GB 显存不释放）。改值时注意：`launchctl setenv` 旧值会残留，改 plist 后要 `launchctl unload`+`load` 或重新 `setenv`（见 TROUBLESHOOTING §6） |
 
 > 想让环境变量持久化：走 `launchctl setenv`（在本人终端里直接跑即成功，`getenv` 立即返回；重启 Ollama 生效）或写 LaunchAgent plist `~/Library/LaunchAgents/com.user.ollama-env.plist`（登录自动注入、跨重启持久）。**别走 shell 的 `.zshrc`**——Ollama.app 是独立 GUI 进程，不读 shell 环境，写在 shell 里等于没设。

@@ -5,7 +5,7 @@ title: 当前配置与验证
 
 # Qwen3.8-27B 本地部署配置快照
 
-> **✅ 2026-11-03 实测状态（先看这里）**：**Ollama 0.40.13 + `qwen3.8:27b-mlx` 正常可用**。M5 Pro 48GB 上实测 100% GPU、上下文 **262144**（模型上限；先 32768 → 65536 因 Hermes ≥64K 硬门槛，但 64K 在真实 agent 长会话下仍溢出截断，11:11 进一步开到最大 262144 才稳定）、GPU 共享内存常驻 ~27 GiB、**decode 26.5–39 tok/s / prefill ~224 tok/s**（两个指标，见下方「实测速度定论」、别混读）、冷启动 2.5–6 s。不需要任何第三方引擎顶替。环境变量四件套（q8_0 / KEEP_ALIVE=30m / NUM_BATCH=2048 / FLASH_ATTENTION=1）经 `launchctl` 落地；MTP 自适应投机解码**确认生效**（`drafted=341 acceptance=0.71`）。**KEEP_ALIVE=30m 已于 2026-11-03 01:06 最终验收生效**（`ollama ps` 的 `UNTIL` 列显示 `29 minutes from now` 而非 `Forever`；MTP 重启后仍生效，`drafted=84 acceptance=0.95`、decode 39.5 tok/s）。
+> **✅ 2026-11-03 实测状态（先看这里）**：**Ollama 0.40.13 + `qwen3.8:27b-mlx` 正常可用**。M5 Pro 48GB 上实测 100% GPU、上下文 **262144**（模型上限；先 32768 → 65536 因 Hermes ≥64K 硬门槛，但 64K 在真实 agent 长会话下仍溢出截断，11:11 进一步开到最大 262144 才稳定）、GPU 共享内存常驻 ~27 GiB、**decode 26.5–39 tok/s / prefill ~224 tok/s**（两个指标，见下方「实测速度定论」、别混读）、冷启动 2.5–6 s。不需要任何第三方引擎顶替。环境变量经 `launchctl` 落地（**KEEP_ALIVE=30m 必设**；q8_0 / FLASH_ATTENTION 经 11-04 三组 A/B 实测对 MLX runner **纯 no-op**，可省，见「环境变量配置」§1 第三次修正）；MTP 自适应投机解码**确认生效**（`drafted=341 acceptance=0.71`）。**KEEP_ALIVE=30m 已于 2026-11-03 01:06 最终验收生效**（`ollama ps` 的 `UNTIL` 列显示 `29 minutes from now` 而非 `Forever`；MTP 重启后仍生效，`drafted=84 acceptance=0.95`、decode 39.5 tok/s）。
 >
 > ⚠️ **本页 11-01 版本写的是「Ollama MLX runner 病态，主用 MTPLX 顶替」，该结论已于 11-02 推翻并被本页删除。** 真正原因是三件事叠加：① 上下文被设成 262144（不是 Modelfile 的 131072）；② 两个 27B 引擎同时驻留，48 GB 装不下；③ 单轮 prompt 高达 7.8 万 token。完整判定链与推翻过程见 `TROUBLESHOOTING.md` §10。
 >
@@ -70,14 +70,14 @@ ollama:
 
 | 变量 | 值 | 为什么 |
 |------|-----|--------|
-| `OLLAMA_KV_CACHE_TYPE` | `q8_0` | **最关键**。262144 上下文下 f16 KV cache 约 50GB > 48GB → swap 至死、永久 loading；q8_0 砍半到 ~25GB，装得进 48GB，长请求能跑完 |
+| `OLLAMA_KV_CACHE_TYPE` | — | 🔴 **2026-11-04 三组 A/B 定案：对 MLX runner 纯 no-op，不必设**（同二进制 0.40.13、同一 55K 请求，KV 增量 2.87GB vs 无 env 2.85GB；详见 §1）。11-02 的「必须开」是归因混淆。GGUF/llama.cpp 路线仍真实有效 |
 | `OLLAMA_KEEP_ALIVE` | `30m` | 模型驻留 30 分钟免重载（冷启动 2.5–6 s 只在 30 分钟无调用后才发生）。**2026-11-03 老板最终裁定 30m**（原话纠正：不是 60 秒、也不是 -1，是 30 分钟，与公众号文章 `OLLAMA_KEEP_ALIVE 30m` 一致）；-1 会永久占 25 GB 显存 idle 不释放，30m 是省显存与免冷启的折中。⚠️ 从 -1 改回 30m 时有个坑：改 plist 文件 ≠ 更新运行时环境，`launchctl setenv` 的旧 `-1` 会残留（重启 Ollama 仍显示 `Forever`），需 `launchctl unload`+`load` 或本人终端重新 `setenv`（见 `TROUBLESHOOTING.md` §6） |
 | `OLLAMA_NUM_BATCH` | `2048` | prefill 提速（batch 512→2048 少 forward pass），大 prompt 受益明显 |
 | `OLLAMA_FLASH_ATTENTION` | `1` | MLX 后端内置常开，变量基本 no-op，写上无妨 |
 
 > ✅ **关闭 Hermes 对本地长请求的主动 abort（执行层不拦截）**：`HERMES_STREAM_STALE_GIVEUP=0`（默认 5）。源码 `agent/chat_completion_local.py:stale_giveup()` 读此环境变量；连续 stale 次数 ≥ 阈值即立即 abort 整次调用（报错原文 "5 consecutive stale attempts — aborting this call"）。设为 0 关闭该断路器——之后本地长请求（大 prefill / 长会话）由模型侧自己慢跑或报错，Hermes 不再替你打断。写入 `~/.hermes/.env`，**重启 Hermes 生效**。配套：`agent.local_stream_stale_timeout`（默认 900s）是单次请求静默宽限，正常 prefill 远在其内，一般无需改（详见下方「Hermes 历史压缩」）。
 
-### 1) 结论修正：`OLLAMA_KV_CACHE_TYPE=q8_0` 在 MLX 上必须开（旧结论「对 MLX 无效」已作废）
+### 1) 三次反复后的最终定案（2026-11-04 三组 A/B）：q8_0 / FLASH_ATTENTION 对 MLX runner 纯 no-op
 
 Ollama 源码把这两个值只交给 llama.cpp 引擎：
 
@@ -100,14 +100,31 @@ return NewLlamaServerRunner(gpus, modelPath, f, adapters, projectors, opts, numP
 
 ⇒ **修正（2026-11-02，0.40.13 实测）**：本地 27B 走 MLX，**这两个变量必须开 `q8_0`**——262144 大窗口下 f16 KV ~50GB > 48GB 会 swap 至死，q8_0 砍半到 ~25GB 才装得进、长请求才跑得完（server 日志 `OLLAMA_KV_CACHE_TYPE:q8_0` 实锤）。旧文档"开了等于没开"是 0.40.11 小窗口下的误判，已作废。GGUF/llama.cpp 路径同样省一半 KV。KV 在 MLX 里**可量化**（q8_0 生效），并非"不可量化"。
 
+> 🔴 **第三次修正（2026-11-04，三组 A/B，本节最终定案，推翻上一段 11-02 的修正）**：「必须开」的证据不成立——server 日志 env 可见只证明变量被**读取**，不证明 KV 真被**量化**；且「f16 KV ~50GB」是错误估算（真实架构 16 层全注意力 ≈64 KiB/token，262144 满窗 f16 也仅 ~16GB，且 KV 动态分配不预占）。本机同二进制（0.40.13）、同一 55,019 token 请求、全新实例单次完整实测：
+>
+> | 组 | env | KV 增量 | 55K prefill 耗时 |
+> |---|---|---|---|
+> | 对照（app server，已热） | 无 | +2.85 GB | 93 s |
+> | 全新实例 | q8_0 + FA | +2.87 GB | 6m49s |
+> | 全新实例 | 无 | +2.87 GB | 5m39s |
+>
+> → **KV 内存零缩减（no-op）**；2、3 组速度一致，「慢 4 倍」是全新实例首次大 prefill 的预热开销，与 env 无关。11-02 的「109K 请求从 swap 死变稳跑完」应归因于当时一并完成的**停 MTPLX 第二引擎 + 砍单轮 prompt**。**MLX 路线不必设这两个变量**；GGUF/llama.cpp 路线 q8_0 仍真实有效（0.40.11 qwen3:4b 实测省 2.16 GB）。
+
 ### 2) 持久化 env：本机用 LaunchAgent plist（已验证可用）
 
 2026-11-02 实测：`launchctl setenv` 在 WorkBuddy 沙箱里报 `Not privileged`（沙箱不在 GUI 登录会话），但**在你自己的终端里直接跑 `launchctl setenv OLLAMA_KV_CACHE_TYPE q8_0` 等是成功的**（`getenv` 立即返回 `q8_0`），重启 Ollama 即生效。持久化写 plist：
 
 ```bash
-# ~/Library/LaunchAgents/com.user.ollama-env.plist（ProgramArguments: /bin/sh -c "launchctl setenv ...; open -a Ollama"）
-launchctl load ~/Library/LaunchAgents/com.user.ollama-env.plist   # 立即注入 + 开机自动
-killall Ollama && sleep 2 && open -a Ollama                       # 重启生效（osascript quit 遇 TCC 违例时改用 killall）
+# 本机现用：~/Library/LaunchAgents/com.user.ollama-serve.plist（launchd 直接接管 ollama serve）
+#   ProgramArguments: /usr/local/bin/ollama serve
+#   EnvironmentVariables: OLLAMA_KEEP_ALIVE=30m（OLLAMA_CONTEXT_LENGTH=262144 仅作备份，权威值在 GUI db）
+#   RunAtLoad + KeepAlive：登录自启、崩溃保活；app 检测到 11434 被占会复用，不冲突
+osascript -e 'quit app "Ollama"'                                                    # 停 app 自带 server
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.user.ollama-serve.plist # 注册并启动
+open -a Ollama                                                                       # app 复用 11434
+# 回退：launchctl bootout gui/$(id -u)/com.user.ollama-serve && open -a Ollama
+
+> ⚠️ **2026-11-04 状态**：plist 曾验证生效（bootstrap 后 server 为 launchd 子进程、keep_alive 30m）；当日排障中 `bootout` 移除后尚未重新 bootstrap，**当前由 app 自带 server 服务**（keep_alive 回默认 5m），待本人终端重跑上面三行激活耐久 30m。
 ```
 
 ⇒ 结论：**GUI 的 `settings.context_length` 之外，其余 Ollama 变量也能持久生效**，关键是走 `launchctl`（用户会话域）或 LaunchAgent，**别走 shell 的 `.zshrc`**（Ollama.app 不读）。
@@ -127,7 +144,7 @@ killall Ollama && sleep 2 && open -a Ollama                       # 重启生效
 > **三条出路（任选，不互斥）**：
 > 1. **云端快速摘要模型**（推荐，能让压缩真正生效）：把 `auxiliary.compression` 指向已配 key 的云端模型（本机有 `DEEPSEEK_API_KEY` / `HERMES_CUSTOM_AGNES_API_KEY`），摘要几秒完成，历史被压到 ~15K，**请求从 100K+ 降到 20K 内，prefill 从几分钟降到 ~1 分钟**。代价：历史片段出机器（与你本地隐私取向有冲突，需权衡）。
 > 2. **本地保持短会话**：不依赖 LLM 压缩，靠 `micro_compact`（每轮折叠旧工具结果，无 LLM 调用，已开） + 手动 `/new` 或 `/compress` 周期性开新会话，把历史压在可控范围。最省事但需你主动管理。
-> 3. **接受 q8_0 让慢请求能跑完**：q8_0 已解决"swap 至死"，100K 请求现在能跑完而非永久卡死；只是仍慢。配合 `HERMES_STREAM_STALE_GIVEUP=0` 不拦截，符合"执行层不替你打断"。
+> 3. **接受慢请求能跑完**：100K 请求本机可稳定跑完（与 q8_0 无关，11-04 A/B 定案其对本机 MLX 为 no-op），只是慢（prefill 几分钟 + decode ~20 tok/s）。配合 `HERMES_STREAM_STALE_GIVEUP=0` 不拦截，符合"执行层不替你打断"。
 >
 > `micro_compact` 与上面的 LLM 压缩是两件事：前者只折叠旧工具返回（不缩减对话轮次），后者才真正摘要对话历史。本地-only 下只有前者在跑，所以对话文本会无界增长 → 100K+ 每轮。详见 `TROUBLESHOOTING.md` §「一直 loading / 又卡又慢 真实根因链」。
 
@@ -162,14 +179,14 @@ eval_duration = 13,164,898,708 ns (≈13.16s)
 | 场景 | 数字 | 出处 | 说明 |
 |---|---|---|---|
 | **短 prompt 平均 prefill**（12 题 A/B） | **~224 tok/s** | `A_B实测对比报告.md`（MLX 4-bit / 12 题均值，Ollama `/api/ps` 顶层字段 `prompt_eval_count/prompt_eval_duration`） | 这是老板记忆里「200+ tok/s」的原始出处 |
-| **NUM_BATCH=2048 长 prompt 实跑**（q8_0 生效） | **~227 tok/s** | 22:05–22:07 server.log（55,614 token 请求，1512 tok/9s） | 大请求稳跑、无 swap、未回落 |
+| **长 prompt 实跑**（NUM_BATCH=2048） | **~227 tok/s** | 22:05–22:07 server.log（55,614 token 请求，1512 tok/9s） | 大请求稳跑、无 swap。⚠️ 11-04 归因修正：当时 q8_0 同时在场（后证实 no-op），提速归因于 NUM_BATCH=2048（未单独 A/B）与热态 |
 | **短 prompt 单次 prefill**（350-token 生成那次） | **~113.7 tok/s** | 本次 23:00 实测（`prompt_eval_count=26 / 228.5ms`） | 短 prompt 时 batch 利用率不满，数值偏低 |
 | **短 prompt prefill 理论值**（文档旧值） | **348–383 tok/s** | 文档历史值 | 是 M5 Pro GPU 算力上限（~19 TFLOPS）的理论值；实际 A/B 均值 224 tok/s 低于此，原因是 12 题 A/B 的 prompt 体量与 batch 利用率差异 |
 
 **结论**：
 - 短 prompt（1–5K）实际 prefill 在 100–224 tok/s 之间，长 prompt（50K+）在 227 tok/s 上下，理论上限 348–383 tok/s。
 - **224 tok/s 的 prefill 不是 bug**，是 A/B 12 题的稳态均值（batch 利用率不是理论峰值），跟老板记忆对得上。
-- q8_0 + NUM_BATCH=2048 让长请求 prefill 稳定在 227 tok/s 不回落（f16 时代会 swap 掉到个位数），这是**「一直 loading」变「能跑完」的关键**。
+- 长 prompt prefill 稳定在 ~227 tok/s 不回落（11-04 归因修正：功劳在 NUM_BATCH=2048 与停掉第二引擎；q8_0 已证实对 MLX no-op），这是**「一直 loading」变「能跑完」的关键**。
 
 > ⚠️ 这是 **单会话、无并发** 时的数字。多会话并发时，单请求的实际体感 = 排队时间 + prefill + decode 三者之和；Ollama 单并发（`NUM_PARALLEL=1`）决定了排队时间是主要瓶颈（见 `TROUBLESHOOTING.md` §13 补充实证）。
 
@@ -259,7 +276,7 @@ eval_duration = 13,164,898,708 ns (≈13.16s)
 
 | 变量 | Qwen3.8 值 | 作用 | 换模型时 |
 |---|---|---|---|
-| `OLLAMA_KV_CACHE_TYPE` | `q8_0` | 大窗口下 KV 砍半不 swap（**最关键**） | 必开，但确认 Qwen4 的 MLX 是否同样吃 q8_0 |
+| `OLLAMA_KV_CACHE_TYPE` | — | **MLX 路线 no-op（11-04 三组 A/B 定案），不必设**；GGUF 路线才有效 | 换模型先跑 A/B 再下结论，别凭 server 日志 env 可见就判定生效 |
 | `OLLAMA_KEEP_ALIVE` | `30m` | 驻留 30 分钟免重载（老板裁定 30m，非 -1、非 60 秒） | 必开，值按你的取舍定 |
 | `OLLAMA_NUM_BATCH` | `2048` | prefill 提速 | 必开 |
 | `OLLAMA_FLASH_ATTENTION` | `1` | MLX 内置常开，no-op | 写上无妨 |
@@ -294,7 +311,7 @@ eval_duration = 13,164,898,708 ns (≈13.16s)
 - 纯本地做不了"保留语义的 LLM 摘要"（摘要模型本身要读 100K+，抢单 GPU）。
 - 选项：**A 纯本地确定性兜底**（丢中间细节、零隐私代价）/ **B 云端摘要模型**（保语义、历史出机器）。
 - ⚠️ **别调高 `context_timeout_seconds`**（会让每轮多一次 100K prefill，比不压缩还慢）。
-- 默认**先不加**，试 q8_0 让慢请求能跑完，不够再拍板 A/B。
+- 默认**先不加**（q8_0 对 MLX no-op；慢请求本机本来就能跑完，只是分钟级），不够再拍板 A/B。
 
 ### 第 8 步：落地归档
 
