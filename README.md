@@ -7,13 +7,16 @@ title: 完整部署方案
 
 面向 macOS Apple Silicon 用户的本地大模型部署教程：基于 M5 Pro / 48GB 实测，覆盖 Ollama + MLX 与 GGUF 量化方案对比、MTP 投机解码加速、国内镜像下载与完整避坑。
 
-> **最后验证：2026-11-02** · Ollama 0.40.13 · macOS 27.2（M5 Pro / 48GB 实测）
+> **最后验证：2026-11-05** · Ollama 0.40.14 · macOS 27.2（M5 Pro / 48GB 实测）
 > 适用版本：**Ollama ≥ 0.30**。更早版本存在 MLX 大上下文超时 bug（[问题 2](./TROUBLESHOOTING.md#2-mlx-超时-500-context-canceled)），动手前先确认版本。
 >
 > **0.40 起有三处行为变化，照更早的教程抄会踩坑**（2026-11-02 实测）：
 > ① 上下文长度的**真正开关是 Ollama.app 的设置**（`db.sqlite` 里的 `settings.context_length`），优先级**高于** Modelfile 的 `num_ctx`——改 Modelfile 不生效是常态；
 > ② MLX 路线**不要再手写 `draft_num_predict`**，0.40 已自适应投机解码，手动指定反而从 34.9 掉到 28.0 tok/s（[问题 5](./TROUBLESHOOTING.md#5-mtp-投机解码gguf-手动开--mlx-040-已自适应)）；
 > ③ 本机 48 GB **实测 262144 稳定**（MLX KV 动态分配，idle ~18–31GB，不预占满窗）；早前"262144 必然 evict"是对争用日志的误读，已作废。日常把单轮输入压在 ~1 万 token 以内最稳。
+> ④ **接 agent（Hermes 等）时，客户端超时必须大于本地单轮真实耗时**：默认 1800s 会在第 30 分钟切断一个本来能算完的请求（模型侧日志 `status=200 OK`、耗时 `29m59.9s`）。见 [`DEPLOY-CHECKLIST.md`](./DEPLOY-CHECKLIST.md) Step 4.1。
+>
+> 📋 **只想照着做、不想读原理** → 直接开 [`DEPLOY-CHECKLIST.md`](./DEPLOY-CHECKLIST.md)：一页纸、按序执行、每步带验收命令。出故障再回来查本页和 [`TROUBLESHOOTING.md`](./TROUBLESHOOTING.md)。
 
 ## 适用对象
 
@@ -98,7 +101,7 @@ done
 | 36GB+ | Q6_K_XL | 23.56 GB | 未实测 |
 | 48GB+ | Q8_K_XL | 29.30 GB | 未实测 |
 
-> 速度列优先采用 2026-09-15 同条件 A/B（`temperature=0`、12 题）数据；MLX nvfp4 在短上下文基准下冲到 ~40 tok/s。IQ 系列为 ISTA-DASLab **GSQ-RCO** 混合精度量化，省显存、质量基本无损（IQ3_XXS 在大规模知识基准上有 ~1 分边际退化）。MLX nvfp4 与 GGUF Q5_K_M 均需在 Modelfile 写 `draft_num_predict 3` 开启 MTP 才达上表速度。
+> 速度列优先采用 2026-09-15 同条件 A/B（`temperature=0`、12 题）数据；MLX nvfp4 在短上下文基准下冲到 ~40 tok/s。IQ 系列为 ISTA-DASLab **GSQ-RCO** 混合精度量化，省显存、质量基本无损（IQ3_XXS 在大规模知识基准上有 ~1 分边际退化）。⚠️ **MTP 开法按路线不同**：MLX nvfp4 在 0.40+ **自适应投机解码，不要手写 `draft_num_predict`**（手写反而从 34.9 掉到 28.0 tok/s，见开头 ②）；GGUF Q5_K_M 路线仍需在 Modelfile 写 `draft_num_predict 3` 才达上表速度。
 
 ### 第三步：安装 Ollama
 
@@ -234,7 +237,7 @@ open -a Ollama && sleep 10 && ollama ps
 
 > **接 agent 客户端必须开到最大 262144（不是 65536）。** Hermes Agent 把 64K 做成硬门槛（`MINIMUM_CONTEXT_LENGTH = 64_000`），低于它就拒绝启动，报 `below the minimum 64,000 required by Hermes Agent`——所以 32768 不可用。但 64K 只是"能启动"的下限，**真实 agent 长会话（工具输出 + 多轮历史）会突破 64K 被静默截断、工具调用崩**，本机实测 65536 仍不够、开到模型上限 262144 才稳定。这类客户端要同步改两处：`model.context_length` + `model.ollama_num_ctx`（都取 262144）。注意 **`/v1` 端点会忽略请求里的 `num_ctx`**，所以客户端改完服务端窗口仍是旧的——两边都得改。完整排查见 `TROUBLESHOOTING.md` §12。
 
-> 为什么不是越大越好：窗口是**容量**旋钮，不是**速度**旋钮。本机预填充 348–383 tok/s，32 K prompt 光读入就要 88 秒、78 K 要 217 秒。日常对话和改代码根本用不到 1 万以上。
+> 为什么不是越大越好：窗口是**容量**旋钮，不是**速度**旋钮。本机预填充**实测约 224 tok/s**（348–383 是 GPU 理论值），32 K prompt 光读入就要约 145 秒、78 K 要约 348 秒。日常对话和改代码根本用不到 1 万以上。
 
 **环境变量参考（本机实测大部分没必要设）：**
 

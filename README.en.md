@@ -7,7 +7,7 @@ title: English Guide
 
 A practical local-LLM deployment guide for macOS Apple Silicon users, based on real-world testing on an M5 Pro / 48GB. Covers the Ollama + MLX vs GGUF quantization comparison, MTP speculative-decoding acceleration, China-region mirror downloads, and a full troubleshooting playbook.
 
-> **Last verified: 2026-11-02** · Ollama 0.40.13 · macOS 27.2 (M5 Pro / 48GB)
+> **Last verified: 2026-11-05** · Ollama 0.40.14 · macOS 27.2 (M5 Pro / 48GB)
 > Supported: **Ollama ≥ 0.30**. Earlier versions have an MLX large-context timeout bug (see [Issue 2](./TROUBLESHOOTING.md#2-mlx-超时-500-context-canceled)); check your version before starting.
 >
 > **Three behavior changes since 0.40 — older tutorials will mislead you** (verified 2026-11-02):
@@ -220,7 +220,7 @@ open -a Ollama && sleep 10 && ollama ps
 
 > **Agent clients must use the model max 262144, not 65536.** Hermes Agent hard-rejects anything below 64 K (`MINIMUM_CONTEXT_LENGTH = 64_000`) — so 32768 won't even start. But 64 K is only the *startup* floor; real agent sessions (tool outputs + multi-turn history) blow past 64 K and get silently truncated, breaking tool calls. This machine: 65536 was still not enough, 262144 is stable. Such clients also need `model.context_length` **and** `model.ollama_num_ctx` raised to 262144. Note that **the `/v1` endpoint ignores the request-level `num_ctx`**, so the server window stays where it was — both sides must change. Full walkthrough: `TROUBLESHOOTING.md` §12.
 
-> Why bigger isn't better: the window is a **capacity** knob, not a **speed** knob. This machine prefills at 348–383 tok/s, so a 32 K prompt costs ~88 s just to read in, and 78 K costs ~217 s. Daily chat and coding rarely need more than 10 K.
+> Why bigger isn't better: the window is a **capacity** knob, not a **speed** knob. This machine prefills at a **measured ~224 tok/s** (348–383 tok/s is the GPU theoretical ceiling), so a 32 K prompt costs ~145 s just to read in, and 78 K ~348 s. Daily chat and coding rarely need more than 10 K.
 
 **Env var reference (4 are mandatory on 48GB + 262144 + local 27B):**
 
@@ -345,7 +345,7 @@ No. The local model runs fully offline.
 ### Q5: Will MLX blow up VRAM at 128K context?
 Single runs won't. In the 2026-09-10 A/B, MLX at 131072 context passed 10/10 on a 5-dimension question over 2 rounds with **zero OOM**; this box later ran **262144** (model max) single-run stably too (idle ~18–31GB, MLX KV dynamic). The GSQ / GGUF path (Q5, IQ3, etc.) is the same llama.cpp engine and is equally stable at 131K+ single-run. The occasional "intermittent VRAM overflow" was caused by **multiple sessions/processes calling the same MLX model at once**, stacking KV-cache VRAM — not the context being too large.
 
-> ⚠️ **"It fits" is not the same as "it's usable"**: a capacity ceiling is unrelated to speed; real latency is set by **per-turn prompt tokens**. This machine prefills at 348–383 tok/s, so **a 32 K prompt costs ~88 s just to read in, 78 K ~217 s, 156 K ~7 min**. Opening the window to 262144 for long-session headroom is correct, but **keep each turn's input under ~10 K tokens** (tune file_read_max_chars / tool_output / history trimming) — otherwise one prefill takes minutes and Ollama's single concurrency blocks everything behind it.
+> ⚠️ **"It fits" is not the same as "it's usable"**: a capacity ceiling is unrelated to speed; real latency is set by **per-turn prompt tokens**. This machine prefills at a **measured ~224 tok/s** (348–383 tok/s is the GPU theoretical ceiling), so **a 32 K prompt costs ~145 s just to read in, 78 K ~348 s, 156 K ~12 min**. Opening the window to 262144 for long-session headroom is correct, but **keep each turn's input under ~10 K tokens** (tune file_read_max_chars / tool_output / history trimming) — otherwise one prefill takes minutes and Ollama's single concurrency blocks everything behind it.
 
 - Daily single run / short-mid interaction: `qwen3.8:27b-mlx` (MLX) on the GUI's 262144 window (verified stable on this box); lower to 32768/65536 only when a second inference engine is co-resident.
 - Long agent with concurrent sessions: the server now enforces `OLLAMA_NUM_PARALLEL=1` (set in a launchd plist outside the App bundle, so Ollama updates can't wipe it). Ollama processes every request strictly serially — still sub-second per request, bounded memory, no swap thrash; works for both MLX and GGUF. GGUF (q5 / GSQ IQ3) was already stable under concurrency, so just pick by size.

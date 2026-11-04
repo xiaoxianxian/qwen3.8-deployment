@@ -24,8 +24,11 @@ title: 踩坑排查手册
 | 系统更新后全挂（探针 0 字节 / 每请求 2-5 分钟 / 模型加载不上） | [10](#10-卡死--模型加载不上--每请求几分钟含-macos-27-后集中爆发的那次) |
 | 模型突然从 `ollama list` 消失、权重凭空少了 18 GB | [11](#11-高危模型突然从-ollama-list-消失旧版二进制启动-gc-清库) |
 | 第三方客户端（Hermes）切到本地模型就报错，界面只说"出了点问题" | [12](#12-第三方客户端报-context-window--below-64000hermes-实证) |
+| "一直 loading / 又卡又慢"，窗口从没动过 | 见正文 **§13**（真实根因链：历史压缩两层失效 + 并发重试风暴） |
+| Hermes 全瘫：`/v1` 超时 + `/compress revision_conflict` | 见正文 **§14**（真凶是失控 turn，不是配置） |
 | 【Ollama 升级后】同模型同上下文突然变慢、每轮 1~3 分钟、无任何报错 | [15](#15-ollama-升级后配置静默丢失变慢一直加载的头号新坑) |
 | Hermes 多会话并发把 Ollama 打崩：任务全 loading、gateway 刷 `Connection error` 风暴 | [§16](#16-hermes-gateway-并发连接洪流把-ollama-打崩connection-error-风暴) |
+| **早上起来一批会话全超时挂掉 / 部分会话永远 loading 不结束** | 见正文 **§17**（客户端 1800s 切断 + 会话钉在死链端点） |
 
 ---
 
@@ -708,4 +711,123 @@ open -a Ollama
 
 **为什么这条不像 §10/§14**：§10 是内存 / Second-engine 挤爆、§14 是失控 turn + revision_conflict；本条是「serve 本身健康、单请求飞快，但被并发连接冲爆 accept 队列」。三者都会让任务 loading，但治法不同——本条只加一行 `NUM_PARALLEL=1` 即可，无需动上下文长度或杀引擎。
 
----
+---## §17. 2026-11-05：本地模型明明算完了，客户端却"全超时挂掉"
+
+**症状**：早上起来发现一批会话挂着报错、一批永远 loading。Ollama 侧 `/api/ps` 正常、单请求能跑，但 `~/.hermes/logs/agent.log` 里满是：
+
+```
+ERROR agent.chat_completion_helpers: Streaming failed before delivery: Request timed out.
+WARNING [...] agent.conversation_loop: API call failed (attempt 3/5) error_type=APITimeoutError
+WARNING [...] Retrying API call in 10.2s (attempt 3/5)
+```
+
+**真因（两层，会同时出现）**：
+
+### 17.1 客户端 1800s 读超时 < 单轮实际耗时
+
+- `HERMES_API_TIMEOUT` 默认 **1800s（30 分钟）**，是**单请求**读超时。
+- 本机多会话并发时，单轮实测 **24–30 分钟**（见 §13 的排队解释 + 下文 17.3 的缓存命中率）。
+- 两者卡在同一个量级 → 大量请求在"快要算完"时被切断，Hermes 再重试 5 次，每次都重新排队 → 越重试越堵。
+
+**铁证判据**（看 Ollama 请求耗时的小数尾巴）：
+
+```bash
+grep -E 'took=' /tmp/ollama-detached.log | grep -v status | tail -10
+```
+
+出现 `took=29m59.93s` / `29m59.95s` / `30m30s` 这种**紧贴 30 分钟**的数，就是客户端在 1800s 处掐断的铁证——模型侧 `status="200 OK"`，证明**它其实算完了，只是没人收结果**。
+
+**修复（推荐 A，实时生效免重启）**：
+
+```yaml
+# A. ~/.hermes/config.yaml —— 按 provider 设，源码 hermes_cli/timeouts.py:33 每请求实时读
+providers:
+  custom:
+    request_timeout_seconds: 7200
+  ollama:
+    request_timeout_seconds: 7200
+```
+
+> 两个 id 都要写：带 `provider` 字段的老会话运行时是 `ollama`，`local-*` 桌面会话是 `custom`。Hermes 的报错原文也会直接点出这句 ——
+> `summary=Request timed out waiting for the provider to respond (if the model needs longer, raise providers.custom.request_timeout_seconds in config.yaml)`。
+
+```bash
+# B. 全局 env（备选，必须重启 gateway）
+# ~/.hermes/.env
+HERMES_API_TIMEOUT=7200        # 2h，覆盖"排队 + 30 分钟单轮"最坏情况
+HERMES_STREAM_STALE_GIVEUP=0   # 执行层不主动打断
+hermes gateway restart          # env 在进程启动时读入，必须重启
+```
+
+### 17.2 护栏键名写错，加了等于没加
+
+上一轮曾加 `local_stream_stale_timeout_blocking: 3600`（还带错缩进），**这个键在源码里不存在**，所以运行实例一直是默认 900s，夜里照样被 `Stream stale for 900s … Killing connection` 掐流。
+
+正确键名（源码 `agent/chat_completion_helpers.py:643`）：
+
+```yaml
+# ~/.hermes/config.yaml
+agent:
+  local_stream_stale_timeout: 10800    # 3 小时，单请求"静默宽限"
+```
+
+**验证方式（重要，别被"没再报错"骗了）**：确认配置真被读到，而不是"请求死得更早所以没走到这一步"：
+
+```bash
+cd ~/.hermes/hermes-agent && ./.venv/bin/python -c "
+import sys; sys.path.insert(0,'.')
+from agent.chat_completion_helpers import _local_stream_stale_timeout_default, _stream_env_stale_base
+print('local_stale =', _local_stream_stale_timeout_default())
+print('env_stale_base =', _stream_env_stale_base())
+"
+# 期望 local_stale = 10800.0；若仍是 900.0 说明键名/缩进又错了
+```
+
+⚠️ **判定纪律**：改完配置后"不再有 900s stale"**不等于**生效——如果请求在 1800s 或 502 处先死，也看不到 stale。必须按"超时时刻 − stale 秒数"倒推出**请求开始时间**，只有开始时间晚于改配置时刻的那些才叫生效证据。本机 11-05 就误判过一次（改后那 5 条 stale 的请求其实都是改配置前发出的）。
+
+### 17.3 会话被钉在已下线的端点上（跟 Ollama 完全无关）
+
+Hermes 的**每个会话各自记着 `model_config.base_url`**，切全局 provider 不会改写老会话。本机 11-05 实测：8 个活跃会话里 **4 个仍指向已卸载的 MTPLX `127.0.0.1:8000`**：
+
+```bash
+curl -s -i --max-time 5 http://127.0.0.1:8000/v1/models | head -3
+# HTTP/1.1 502 Bad Gateway
+# upstream connect failed: Connection refused (os error 61)
+```
+
+而 `fallback_providers: []`（默认空）**不会自动回退**，于是这些会话每次都是 502 → 重试 5 次 → 失败，**永远跑不完**。用户视角是"这几个任务怎么一直 loading"，很容易误判成模型慢。
+
+**一查就现原形**：
+
+```bash
+python3 - <<'PY'
+import sqlite3,os,json
+c=sqlite3.connect(os.path.expanduser("~/.hermes/state.db"))
+for sid,mc,bbu in c.execute("select id,model_config,billing_base_url from sessions where ended_at is null"):
+    u=bbu
+    try: u=json.loads(mc).get("base_url") or bbu
+    except: pass
+    print(f"{sid[:24]:26s} -> {u}")
+PY
+```
+
+**处置**：进那些会话**重新选一次模型**（会重写 `model_config.base_url`），或结束掉重开。**切全局 provider 救不了它们。**
+
+### 17.4 附带判据：缓存命中率告诉你"慢是自找的还是物理的"
+
+```bash
+grep -E 'cache hit' /tmp/ollama-detached.log | tail -12 \
+  | grep -oE 'total=[0-9]+ matched=[0-9]+' \
+  | awk '{for(i=1;i<=NF;i++){split($i,a,"="); if(a[1]=="total")t=a[2]; if(a[1]=="matched")m=a[2]}
+          if(t>0) printf "total=%-7d matched=%-7d hit=%.1f%%\n", t, m, 100*m/t}'
+```
+
+- **95–100%** → 单会话独占，prefill 免费，单轮快；
+- **20–40%**（匹配量恒定在 ~18K，就是那段公共 system prompt） → 多会话抢单槽、互相驱逐 KV，**每轮重算几十 K token**，单轮被拖到 25–30 分钟。
+
+`NUM_PARALLEL=1` 下唯一有效的杠杆是**减并发**，不是继续调 Ollama 参数。
+
+### 17.5 一句话避坑
+
+> **Ollama 慢是物理，Hermes 超时是配置。**
+> 看到"全超时/一直 loading"，先分清三件事：① 请求是不是被 1800s 切断（看 `took≈30m`）；② 会话是不是钉在死链端点（查 `sessions`）；③ 缓存命中率是不是掉到 30%（减并发）。三件都不在 Ollama 侧。
