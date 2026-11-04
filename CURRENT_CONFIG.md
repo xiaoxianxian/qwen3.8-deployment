@@ -10,7 +10,8 @@ title: 当前配置与验证
 >   ⚠️ 早年文档写的「常驻 20–22 GB」是**空载/小窗口读数**，262144 满窗实际要 35 GB，按 35 GB 规划内存。
 > - **launchd job 当前未加载**（`launchctl print gui/$(id -u)/com.ollama.serve` 无输出），在跑的是脱管实例；plist 文件本身是对的，重新 bootstrap 即可（见下方「环境变量配置 §2」）。
 > - 服务端 `NUM_PARALLEL=1` / `MAX_LOADED_MODELS=1` / `KEEP_ALIVE=30m` 已在脱管实例上确认生效。
-> - 🔴 **当前「慢 / 早上起来全超时挂掉」的主因不在 Ollama，在 Hermes 客户端**：单请求读超时 `HERMES_API_TIMEOUT` 默认 **1800s（30 分钟）**，而大会话单轮实测要 **24–30 分钟**，正好在 30 分钟处被切断。见文末「Hermes 客户端超时（2026-11-05 新增）」，**这才是必改项**。
+> - 🟢 **「早上起来全超时挂掉」已定位并修复（2026-11-05 05:06 验证通过）**：真因是客户端**单请求读超时**（默认 1800s）小于「并发数 × 单轮耗时」。已设 `providers.ollama/custom.request_timeout_seconds = 14400` + `agent.local_stream_stale_timeout = 14400`（**免重启，每请求实时读**）。
+>   验证：改配置后完成的 4 条请求 latency 分别为 **60.9 / 120.5 / 181.8 / 151.9 分钟，全部成功返回**（1800s 下必被砍），04:37 之后零失败。详见文末「Hermes 客户端超时」与 `TROUBLESHOOTING.md` §17.5。
 >
 > **✅ 2026-11-03 实测状态**：**Ollama 0.40.13 + `qwen3.8:27b-mlx` 正常可用**。M5 Pro 48GB 上实测 100% GPU、上下文 **262144**（模型上限；先 32768 → 65536 因 Hermes ≥64K 硬门槛，但 64K 在真实 agent 长会话下仍溢出截断，11:11 进一步开到最大 262144 才稳定）、GPU 共享内存常驻 ~27 GiB、**decode 26.5–39 tok/s / prefill ~224 tok/s**（两个指标，见下方「实测速度定论」、别混读）、冷启动 2.5–6 s。不需要任何第三方引擎顶替。环境变量经 `launchctl` 落地（**KEEP_ALIVE=30m 必设**；q8_0 / FLASH_ATTENTION 经 11-04 三组 A/B 实测对 MLX runner **纯 no-op**，可省，见「环境变量配置」§1 第三次修正）；MTP 自适应投机解码**确认生效**（`drafted=341 acceptance=0.71`）。**KEEP_ALIVE=30m 已于 2026-11-03 01:06 最终验收生效**（`ollama ps` 的 `UNTIL` 列显示 `29 minutes from now` 而非 `Forever`；MTP 重启后仍生效，`drafted=84 acceptance=0.95`、decode 39.5 tok/s）。
 >
@@ -349,7 +350,7 @@ eval_duration = 13,164,898,708 ns (≈13.16s)
 
 | 层 | 配置项 | 默认值 | 管什么 | 改完何时生效 |
 |---|---|---|---|---|
-| ① 单请求读超时 | **`HERMES_API_TIMEOUT`**（`~/.hermes/.env`） | **1800s** | 一个请求最多等多久。**本地长请求被切就是它** | **重启 gateway**（env 在进程启动时读入） |
+| ① 单请求读超时 | **`providers.<id>.request_timeout_seconds`**（`config.yaml`）；未设时回落 `HERMES_API_TIMEOUT`（`.env`） | 1800s | 一个请求最多等多久。**本地长请求被切就是它** | 前者**下一条请求即生效**（配置缓存按文件签名失效）；后者要重启 gateway |
 | ② 流式静默宽限 | **`agent.local_stream_stale_timeout`**（`config.yaml` 的 `agent:` 段） | 900s | 流中途**多久没有新数据**算卡死 | 下一条请求即生效（每请求 `load_config_readonly()`） |
 | ③ 连续卡死断路器 | `HERMES_STREAM_STALE_GIVEUP`（`~/.hermes/.env`） | 5 | 连续 N 次 stale 就放弃整次调用；`0` = 关掉断路器 | 重启 gateway |
 
@@ -380,10 +381,15 @@ grep -E 'APITimeoutError|Streaming failed before delivery' ~/.hermes/logs/agent.
 # ~/.hermes/config.yaml
 providers:
   custom:                          # 注意：本地会话运行时 provider id 就是 custom
-    request_timeout_seconds: 7200
+    request_timeout_seconds: 14400
   ollama:                          # 另一批会话的 id 是 ollama，两个都写上才全覆盖
-    request_timeout_seconds: 7200
+    request_timeout_seconds: 14400
 ```
+
+> **数值怎么定（别拍脑袋）**：单条实测 `took≈29m59s`（≈1800s），`NUM_PARALLEL=1` 下 N 个会话是**严格串行**的，最后一个要等 `N × 30min`。
+> - 并发 ≤4 → 7200s 够
+> - 并发 8（本机 11-05 实况）→ **14400s**（4 小时）
+> - 卡在临界值上 = 反复在"快算完"时被砍，比给足更糟
 
 > 为什么有两个 id：`sessions.model_config` 里有 `provider` 字段的会话报 `ollama`，没有该字段的（如 `local-*` 桌面会话）报 `custom`。源码 `hermes_cli/timeouts.py:33` 按 `providers.<id>.request_timeout_seconds` 查，查不到就回落默认值 —— 所以**只写一个会有会话漏网**。
 
@@ -391,37 +397,43 @@ providers:
 
 ```bash
 # ~/.hermes/.env
-HERMES_API_TIMEOUT=7200          # 2 小时，覆盖"排队 + 24~30 分钟单轮"的最坏情况
+HERMES_API_TIMEOUT=14400         # 4 小时，覆盖 8 并发 × 30 分钟串行排队的最坏情况
 HERMES_STREAM_STALE_GIVEUP=0     # 执行层不主动打断（长 prefill 期间本来就没输出）
 hermes gateway restart           # env 在进程启动时读入，必须重启
 ```
 ```yaml
 # ~/.hermes/config.yaml
 agent:
-  local_stream_stale_timeout: 10800   # 3 小时；注意是 agent 段下的键
+  local_stream_stale_timeout: 14400   # 4 小时；注意是 agent 段下的键。必须 ≥ 上面的 request_timeout，否则它会先 kill
 ```
 
 > 两者不冲突：设了 `providers.<id>.request_timeout_seconds` 就以它为准（源码 `_stream_timeouts()` 里 `cfg` 优先于 env），env 作为兜底。
 
-### 另一半：会话被钉在已经下线的端点上
+### 另一半：判断会话端点别用 `billing_base_url`
 
-Hermes 的每个会话在 `sessions` 表里**各自记着 `model_config.base_url`**，切换主 provider **不会**改写老会话。本机 2026-11-05 实测：8 个活跃会话里 4 个仍指向已卸载的 MTPLX `127.0.0.1:8000`（返回 `502 upstream connect failed`），`fallback_providers: []` 又不会自动回退 → **这些会话永远跑不完，跟 Ollama 一点关系没有**。
+`billing_base_url` 是**创建时记下的历史记账值**，换过端点也不更新。本机 11-05 有 5 个会话它还写着 `127.0.0.1:8000`（MTPLX，早已下线、`curl` 返回 502），但**运行时实际都走 `11434`** —— 差点据此误判成"会话钉在死链上"。
+
+判断端点只看 `model_config.gateway_runtime.base_url`（网关运行时快照），其次 `model_config.base_url`：
 
 ```bash
-# 一查就现原形：活跃会话各指向哪
 python3 - <<'PY'
 import sqlite3,os,json
 c=sqlite3.connect(os.path.expanduser("~/.hermes/state.db"))
 for sid,mc,bbu in c.execute("select id,model_config,billing_base_url from sessions where ended_at is null"):
-    u=bbu
-    try: u=json.loads(mc).get("base_url") or bbu
-    except: pass
-    print(f"{sid[:24]:26s} -> {u}")
+    d={}
+    try: d=json.loads(mc) if mc else {}
+    except Exception: pass
+    gr=d.get("gateway_runtime") or {}
+    real=gr.get("base_url") or d.get("base_url") or bbu or ""
+    note="  ← billing 是 %s，历史值" % bbu if bbu and real and bbu!=real else ""
+    print(f"{sid[:24]:26s} 实际={real}{note}")
 PY
 # 正常应该只有 127.0.0.1:11434/v1（或你明确要用的云端 provider）
 ```
 
-**处置**：进这些老会话重新选一次模型（会重写 `model_config`），或直接结束掉重开。**别指望切全局 provider 能救它们。**
+**真死链的判据**：日志里没有 `API call #N: … id=chatcmpl-…`，只有报错。只要能看到 id 和 latency，就是跑通了。
+
+**处置**（确认 `gateway_runtime.base_url` 真的连不通时）：进那个会话重新选一次模型（会重写端点），或结束掉重开。**别指望切全局 provider 能救它。**
 
 ### 缓存命中率：判断「是不是自找的慢」
 

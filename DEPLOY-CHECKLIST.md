@@ -23,7 +23,7 @@ curl -s localhost:11434/api/version || echo "Ollama 未运行"
 | 上下文窗口 | **262144** | 模型上限；Hermes 有 `MINIMUM_CONTEXT_LENGTH=64000` 硬下限，低于即建 agent 报 `ValueError` |
 | 单轮 prompt | **尽量 ≤1 万 token** | prefill **实测约 224 tok/s**（理论 348–383），10K ≈ 45s、32K ≈ 145s。窗口大 ≠ 该塞长 prompt |
 | 同时会话数 | **≤3~4** | MLX runner 单槽位（源码级限制，无法通过参数开并行），请求是严格串行的 |
-| 客户端单请求超时 | **≥7200s** | 多会话排队时单轮实测 24–30 分钟，**Hermes 默认 1800s 会把它切断**（见 Step 4） |
+| 客户端单请求超时 | **14400s（8 并发）/ 7200s（≤4 并发）** | 多会话排队时单轮实测 24–30 分钟，`NUM_PARALLEL=1` 下严格串行 → 最后一个要等「并发数 × 30min」。**Hermes 默认 1800s 会把它切断**（见 Step 4） |
 | 常驻内存 | **约 35 GB** | 262144 满窗 `/api/ps` 的 `size_vram` 实测 35.1 GB；按 35 GB 规划 |
 
 ---
@@ -147,7 +147,7 @@ tool_output:                  # 从源头控制会话膨胀
 file_read_max_chars: 30000
 
 agent:
-  local_stream_stale_timeout: 10800   # ★ 3h。"流中点多久没新数据算卡死"。
+  local_stream_stale_timeout: 14400   # ★ 4h。必须 ≥ request_timeout_seconds，否则它先 kill。"流中点多久没新数据算卡死"。
                                       # 键名就是 agent.local_stream_stale_timeout，
                                       # 写 local_stream_stale_timeout_blocking 是无效的（源码无此键）
 
@@ -181,9 +181,9 @@ compression:
 # ~/.hermes/config.yaml —— 两个 provider id 都要写，否则有会话漏网
 providers:
   custom:
-    request_timeout_seconds: 7200
+    request_timeout_seconds: 14400
   ollama:
-    request_timeout_seconds: 7200
+    request_timeout_seconds: 14400
 ```
 
 > 为什么有 `custom` 和 `ollama` 两个：有 `provider` 字段的老会话报 `ollama`，`local-*` 桌面会话报 `custom`。源码按 `providers.<id>.request_timeout_seconds` 查，查不到就回落默认 1800s。
@@ -192,30 +192,45 @@ providers:
 
 ```bash
 # ~/.hermes/.env（这两项是环境变量，必须在 gateway 启动前写入）
-HERMES_API_TIMEOUT=7200          # 2h，覆盖"排队 + 30 分钟单轮"的最坏情况
+HERMES_API_TIMEOUT=14400         # 4h，覆盖 8 并发 × 30 分钟串行排队的最坏情况
 HERMES_STREAM_STALE_GIVEUP=0     # 执行层不主动打断长请求
 hermes gateway restart           # env 在进程启动时读入，必须重启
 ```
 
-### 4.2 会话端点自检（★ 2026-11-05 新增）
+### 4.2 会话端点自检（★ 2026-11-05 新增，同日修正）
 
-**每个 Hermes 会话各自记着 `base_url`，切换全局 provider 不会改写老会话。** 老会话若指向已卸载的引擎（本机踩过：MTPLX `127.0.0.1:8000` 返回 502），会**永远跑不完**，看起来却像"模型慢"。
+**每个 Hermes 会话各自记着端点，切换全局 provider 不会改写老会话。** 真指向已卸载引擎的会话会**永远跑不完**，看起来却像"模型慢"。
+
+但**判断端点必须按优先级取字段**，否则会误报：
+
+| 字段 | 含义 | 能否用 |
+|---|---|---|
+| `model_config.gateway_runtime.base_url` | 网关运行时真实端点 | ✅ 唯一可靠 |
+| `model_config.base_url` | 会话保存值，可能被运行时覆盖 | ⚠️ 次选 |
+| `sessions.billing_base_url` | 历史记账值，几乎不更新 | ❌ 会骗人 |
 
 ```bash
 python3 - <<'PY'
 import sqlite3,os,json
 c=sqlite3.connect(os.path.expanduser("~/.hermes/state.db"))
-bad=0
+bad=0; stale=0
 for sid,mc,bbu in c.execute("select id,model_config,billing_base_url from sessions where ended_at is null"):
-    u=bbu
-    try: u=json.loads(mc).get("base_url") or bbu
-    except: pass
-    flag="" if (u or "").startswith("http://127.0.0.1:11434") or not u else "  ← 非本机 Ollama"
-    bad += 1 if flag else 0
-    print(f"{sid[:24]:26s} -> {u}{flag}")
-print(f"\n指向非 11434 的会话：{bad} 个（>0 就要进这些会话重新选一次模型）")
+    d={}
+    try: d=json.loads(mc) if mc else {}
+    except Exception: pass
+    gr=d.get("gateway_runtime") or {}
+    u=gr.get("base_url") or d.get("base_url") or bbu or ""
+    is_local = u.startswith("http://127.0.0.1:11434") or u.startswith("http://localhost:11434")
+    is_dead  = (u.startswith("http://127.0.0.1") or u.startswith("http://localhost")) and not is_local
+    if is_dead: bad+=1
+    if bbu and u and bbu!=u: stale+=1
+    print(f"{sid[:24]:26s} 实际={u}{'  ← 本机死链' if is_dead else ''}")
+print(f"\n本机死链：{bad} 个（>0 才要进会话重选模型）")
+print(f"billing 与实际不一致：{stale} 个（历史记账，不影响运行，别据此下结论）")
 PY
 ```
+
+> 判据：会话在跑，日志里必有 `API call #N: … latency=Xs id=chatcmpl-…`。有 id + latency = 通了。
 
 ---
 
@@ -246,8 +261,14 @@ curl -s localhost:11434/api/ps | python3 -m json.tool | grep -E 'context_length|
 # ② launchd 是否真的接管了（无输出 = 没接管，重启电脑就丢配置）
 launchctl print gui/$(id -u)/com.ollama.serve 2>/dev/null | grep -E 'state|pid' || echo "❌ 未接管"
 
-# ③ 客户端超时是否到位（缺失=默认 1800s，会在 30 分钟处切断）
-grep -E '^(HERMES_API_TIMEOUT|HERMES_STREAM_STALE_GIVEUP)' ~/.hermes/.env
+# ③ 客户端单请求超时是否到位（缺失=默认 1800s，会在 30 分钟处切断）
+python3 -c "
+import yaml,os
+d=yaml.safe_load(open(os.path.expanduser('~/.hermes/config.yaml')))
+p=d.get('providers') or {}
+print({k:v.get('request_timeout_seconds') for k,v in p.items() if isinstance(v,dict) and v.get('request_timeout_seconds')} or '❌ 未设置')
+print('agent.local_stream_stale_timeout =', (d.get('agent') or {}).get('local_stream_stale_timeout'))
+"
 
 # ④ 缓存命中率（>90% 健康；20~40% = 多会话在互相驱逐 KV）
 LOG=/tmp/ollama-detached.log; [ -f "$LOG" ] || LOG=$(ls -t ~/.ollama/logs/server*.log 2>/dev/null | head -1)
@@ -255,8 +276,8 @@ grep -E 'cache hit' "$LOG" | tail -8 | grep -oE 'total=[0-9]+ matched=[0-9]+' | 
   for(i=1;i<=NF;i++){split($i,a,"="); if(a[1]=="total")t=a[2]; if(a[1]=="matched")m=a[2]}
   if(t>0) printf "hit=%.1f%%  ", 100*m/t} END{print ""}'
 
-# ⑤ 有没有会话钉在死链端点（见 Step 4.2 的完整脚本）
-curl -s -o /dev/null -w "8000=%{http_code}\n" --max-time 3 http://127.0.0.1:8000/v1/models 2>/dev/null || echo "8000=无服务（若有会话指向它就是死链）"
+# ⑤ 历史端点 8000 是否还活着（只作参考：会话到底走哪，要看 gateway_runtime，见 Step 4.2）
+curl -s -o /dev/null -w "8000=%{http_code}\n" --max-time 3 http://127.0.0.1:8000/v1/models 2>/dev/null || echo "8000=无服务（正常，MTPLX 已下线）"
 ```
 
 ---
@@ -270,7 +291,7 @@ curl -s -o /dev/null -w "8000=%{http_code}\n" --max-time 3 http://127.0.0.1:8000
 | 开 4 个会话就排队卡住 | 这是 MLX 单槽位硬限制 | 减到 ≤3 个会话；要真并行只能换 GGUF 模型走 llama.cpp |
 | 新会话第一轮很慢（27~76s） | 系统提示 + 工具 schema 约占 24K token | 正常物理下限，同会话后续轮 2~9s |
 | 回复内容为空 | 输出全在 `thinking` 字段 | 正常，读 `thinking`；或调大 `num_predict` |
-| **早上起来一批会话全超时报错、一批还在转** | Ollama 日志 `took=` 是否贴着 30 分钟；`.env` 里有没有 `HERMES_API_TIMEOUT` | 客户端 1800s 切断 → 执行 Step 4.1 后重启 gateway |
+| **早上起来一批会话全超时报错、一批还在转** | Ollama 日志 `took=` 是否贴着 30 分钟；`providers.*.request_timeout_seconds` 有没有配 | 客户端 1800s 切断 → 执行 Step 4.1（免重启），并发 8 个取 14400s |
 | **某几个会话永远不完成，其他会话正常** | 这几个会话的 `base_url` 是否指向已卸载引擎（如 8000） | 进会话重新选一次模型 → Step 4.2 |
 | **单轮 25~30 分钟，缓存命中只有 30%** | 同时有几个会话在跑 | 减并发到 ≤3；`NUM_PARALLEL=1` 下这是唯一杠杆 |
 | `ollama list` 模型凭空消失 | 是否有旧版二进制启动过（会跑 GC 清库） | 见 `TROUBLESHOOTING.md` §11 |
@@ -283,8 +304,8 @@ curl -s -o /dev/null -w "8000=%{http_code}\n" --max-time 3 http://127.0.0.1:8000
 1. **`OLLAMA_KEEP_ALIVE=30m`**（+ 用 launchd 保证它不丢）——唯一真正有效的环境变量。
 2. **上下文窗口给足 262144，但单轮 prompt 压在 1 万 token 内**——窗口大小和 prefill 速度是两个独立维度。
 3. **客户端不要每轮改写历史**（`micro_compact: false`）——这是命中率从 29% 到 99% 的唯一原因。
-4. **客户端单请求超时要大于本地真实耗时**（`HERMES_API_TIMEOUT=7200`）——否则模型算完了也没人收，表现为"全超时挂掉"。
+4. **客户端单请求超时要大于「并发数 × 本地单轮耗时」**（`providers.*.request_timeout_seconds`，8 并发取 14400s）——否则模型算完了也没人收，表现为"全超时挂掉"。
 
 其余（q8_0 / flash attention / num_batch / 各种"优化项"）在本机 MLX 路线上要么 no-op、要么根本不存在。**别再为它们折腾。**
 
-> 🧭 **一句话分清「慢」和「挂」**：慢 = Ollama 单槽排队（物理，减并发）；挂 = 客户端超时或会话钉在死链端点（配置，改 `.env` / 重选模型）。**这两类症状长得一样，但动的地方完全不同。**详见 `TROUBLESHOOTING.md` §17。
+> 🧭 **一句话分清「慢」和「挂」**：慢 = Ollama 单槽排队（物理，减并发）；挂 = 客户端单请求超时被砍（配置，改 `providers.*.request_timeout_seconds`）。**这两类症状长得一样，但动的地方完全不同。**详见 `TROUBLESHOOTING.md` §17。

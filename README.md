@@ -14,7 +14,7 @@ title: 完整部署方案
 > ① 上下文长度的**真正开关是 Ollama.app 的设置**（`db.sqlite` 里的 `settings.context_length`），优先级**高于** Modelfile 的 `num_ctx`——改 Modelfile 不生效是常态；
 > ② MLX 路线**不要再手写 `draft_num_predict`**，0.40 已自适应投机解码，手动指定反而从 34.9 掉到 28.0 tok/s（[问题 5](./TROUBLESHOOTING.md#5-mtp-投机解码gguf-手动开--mlx-040-已自适应)）；
 > ③ 本机 48 GB **实测 262144 稳定**（MLX KV 动态分配，idle ~18–31GB，不预占满窗）；早前"262144 必然 evict"是对争用日志的误读，已作废。日常把单轮输入压在 ~1 万 token 以内最稳。
-> ④ **接 agent（Hermes 等）时，客户端超时必须大于本地单轮真实耗时**：默认 1800s 会在第 30 分钟切断一个本来能算完的请求（模型侧日志 `status=200 OK`、耗时 `29m59.9s`）。见 [`DEPLOY-CHECKLIST.md`](./DEPLOY-CHECKLIST.md) Step 4.1。
+> ④ **接 agent（Hermes 等）时，客户端单请求超时必须大于「并发数 × 本地单轮耗时」**：默认 1800s 会在第 30 分钟切断一个本来能算完的请求（模型侧日志 `status=200 OK`、耗时 `29m59.9s`）。改 `providers.<id>.request_timeout_seconds`（8 并发取 14400s，免重启）。见 [`DEPLOY-CHECKLIST.md`](./DEPLOY-CHECKLIST.md) Step 4.1。
 >
 > 📋 **只想照着做、不想读原理** → 直接开 [`DEPLOY-CHECKLIST.md`](./DEPLOY-CHECKLIST.md)：一页纸、按序执行、每步带验收命令。出故障再回来查本页和 [`TROUBLESHOOTING.md`](./TROUBLESHOOTING.md)。
 

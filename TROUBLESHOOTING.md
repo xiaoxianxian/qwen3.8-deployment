@@ -28,7 +28,7 @@ title: 踩坑排查手册
 | Hermes 全瘫：`/v1` 超时 + `/compress revision_conflict` | 见正文 **§14**（真凶是失控 turn，不是配置） |
 | 【Ollama 升级后】同模型同上下文突然变慢、每轮 1~3 分钟、无任何报错 | [15](#15-ollama-升级后配置静默丢失变慢一直加载的头号新坑) |
 | Hermes 多会话并发把 Ollama 打崩：任务全 loading、gateway 刷 `Connection error` 风暴 | [§16](#16-hermes-gateway-并发连接洪流把-ollama-打崩connection-error-风暴) |
-| **早上起来一批会话全超时挂掉 / 部分会话永远 loading 不结束** | 见正文 **§17**（客户端 1800s 切断 + 会话钉在死链端点） |
+| **早上起来一批会话全超时挂掉 / 部分会话永远 loading 不结束** | 见正文 **§17**（客户端 1800s 切断；端点要查 `gateway_runtime` 而非 `billing_base_url`） |
 
 ---
 
@@ -745,18 +745,40 @@ grep -E 'took=' /tmp/ollama-detached.log | grep -v status | tail -10
 # A. ~/.hermes/config.yaml —— 按 provider 设，源码 hermes_cli/timeouts.py:33 每请求实时读
 providers:
   custom:
-    request_timeout_seconds: 7200
+    request_timeout_seconds: 14400
   ollama:
-    request_timeout_seconds: 7200
+    request_timeout_seconds: 14400
 ```
 
 > 两个 id 都要写：带 `provider` 字段的老会话运行时是 `ollama`，`local-*` 桌面会话是 `custom`。Hermes 的报错原文也会直接点出这句 ——
 > `summary=Request timed out waiting for the provider to respond (if the model needs longer, raise providers.custom.request_timeout_seconds in config.yaml)`。
 
+**为什么这条能根治**（源码 `agent/chat_completion_helpers.py:2896-2915`）：
+
+```python
+cfg = get_provider_request_timeout(self.agent.provider, self.agent.model)
+if cfg is not None:
+    return base, cfg, min(base, 60.0)   # write=read=cfg，直接返回
+read = env_float("HERMES_STREAM_READ_TIMEOUT", 120.0)   # ← 只有 cfg 为 None 才走到这里
+```
+
+只要 `cfg` 取到值，**读超时就直接等于它**，下面那套「本地 provider → 1800s / 云端 180s」的分支根本不执行。而 `get_provider_request_timeout` 内部每次都 `load_config_readonly()`，配置缓存按文件 mtime/size 签名失效（`hermes_cli/config.py:2111`）——**改文件即生效，不用重启 gateway**。
+
+```bash
+# 验证配置已被读到（在 hermes-agent 目录、用它的 venv）
+cd ~/.hermes/hermes-agent && ./.venv/bin/python -c "
+import sys; sys.path.insert(0,'.')
+from hermes_cli.timeouts import get_provider_request_timeout
+for p in ('ollama','custom'):
+    print(p, '->', get_provider_request_timeout(p, 'qwen3.8:27b-mlx'))
+"
+# 期望两个都是 14400.0；None 说明 provider 名写错或缩进不对
+```
+
 ```bash
 # B. 全局 env（备选，必须重启 gateway）
 # ~/.hermes/.env
-HERMES_API_TIMEOUT=7200        # 2h，覆盖"排队 + 30 分钟单轮"最坏情况
+HERMES_API_TIMEOUT=14400       # 4h，覆盖 8 并发 × 30 分钟串行排队最坏情况
 HERMES_STREAM_STALE_GIVEUP=0   # 执行层不主动打断
 hermes gateway restart          # env 在进程启动时读入，必须重启
 ```
@@ -770,7 +792,7 @@ hermes gateway restart          # env 在进程启动时读入，必须重启
 ```yaml
 # ~/.hermes/config.yaml
 agent:
-  local_stream_stale_timeout: 10800    # 3 小时，单请求"静默宽限"
+  local_stream_stale_timeout: 14400    # 4 小时，单请求"静默宽限"；必须 ≥ request_timeout_seconds
 ```
 
 **验证方式（重要，别被"没再报错"骗了）**：确认配置真被读到，而不是"请求死得更早所以没走到这一步"：
@@ -782,38 +804,46 @@ from agent.chat_completion_helpers import _local_stream_stale_timeout_default, _
 print('local_stale =', _local_stream_stale_timeout_default())
 print('env_stale_base =', _stream_env_stale_base())
 "
-# 期望 local_stale = 10800.0；若仍是 900.0 说明键名/缩进又错了
+# 期望 local_stale = 14400.0；若仍是 900.0 说明键名/缩进又错了
 ```
 
 ⚠️ **判定纪律**：改完配置后"不再有 900s stale"**不等于**生效——如果请求在 1800s 或 502 处先死，也看不到 stale。必须按"超时时刻 − stale 秒数"倒推出**请求开始时间**，只有开始时间晚于改配置时刻的那些才叫生效证据。本机 11-05 就误判过一次（改后那 5 条 stale 的请求其实都是改配置前发出的）。
 
-### 17.3 会话被钉在已下线的端点上（跟 Ollama 完全无关）
+### 17.3 别拿 `billing_base_url` 判断端点——那是历史记账值（一次真实误判）
 
-Hermes 的**每个会话各自记着 `model_config.base_url`**，切全局 provider 不会改写老会话。本机 11-05 实测：8 个活跃会话里 **4 个仍指向已卸载的 MTPLX `127.0.0.1:8000`**：
+2026-11-05 凌晨曾据此断定"4 个会话钉在已下线的 MTPLX `127.0.0.1:8000` 上，永远跑不完"。**这个结论是错的**，错在两处：
 
-```bash
-curl -s -i --max-time 5 http://127.0.0.1:8000/v1/models | head -3
-# HTTP/1.1 502 Bad Gateway
-# upstream connect failed: Connection refused (os error 61)
-```
+1. 把日志里的 `out=502` 读成了 HTTP 502 —— 它是**输出 502 个 token**；
+2. 用 `sessions.billing_base_url` 判断端点 —— 它是**创建时记下的历史值**，换过端点也不更新，而运行时实际走 `model_config.gateway_runtime.base_url`。
 
-而 `fallback_providers: []`（默认空）**不会自动回退**，于是这些会话每次都是 502 → 重试 5 次 → 失败，**永远跑不完**。用户视角是"这几个任务怎么一直 loading"，很容易误判成模型慢。
+当时那 4 个会话的 `gateway_runtime.base_url` 全是 `127.0.0.1:11434`，`agent.log` 里 `502 Bad Gateway / upstream connect failed / Connection refused` **0 条**，`API call #N` 全都有正常返回。
 
-**一查就现原形**：
+**判断端点只能按这个优先级**：
+
+| 字段 | 含义 | 能否用来判死链 |
+|---|---|---|
+| `model_config.gateway_runtime.base_url` | 网关运行时真实端点 | ✅ 唯一可靠 |
+| `model_config.base_url` | 会话保存值，可能已被运行时覆盖 | ⚠️ 次选 |
+| `sessions.billing_base_url` | 记账用，几乎不更新 | ❌ 会骗人 |
 
 ```bash
 python3 - <<'PY'
-import sqlite3,os,json
-c=sqlite3.connect(os.path.expanduser("~/.hermes/state.db"))
-for sid,mc,bbu in c.execute("select id,model_config,billing_base_url from sessions where ended_at is null"):
-    u=bbu
-    try: u=json.loads(mc).get("base_url") or bbu
-    except: pass
-    print(f"{sid[:24]:26s} -> {u}")
+import sqlite3, os, json
+c = sqlite3.connect(os.path.expanduser("~/.hermes/state.db"))
+for sid, mc, bbu in c.execute("select id, model_config, billing_base_url from sessions where ended_at is null"):
+    d = {}
+    try: d = json.loads(mc) if mc else {}
+    except Exception: pass
+    gr = d.get("gateway_runtime") or {}
+    real = gr.get("base_url") or d.get("base_url") or bbu or ""
+    flag = "  <-- billing 与实际不一致，别据此判死链" if bbu and real and bbu != real else ""
+    print(f"{sid[:24]:26s} 实际={real}{flag}")
 PY
 ```
 
-**处置**：进那些会话**重新选一次模型**（会重写 `model_config.base_url`），或结束掉重开。**切全局 provider 救不了它们。**
+**真伪判据**：会话在跑，日志里就有 `API call #N: ... latency=Xs id=chatcmpl-...`。**有 id、有 latency、有 in/out token 数 = 通了**；只有报错、没有 id = 才是真死链。
+
+确认 `gateway_runtime.base_url` 真的连不通时，处置才是：进那个会话**重新选一次模型**（会重写端点），或结束重开。**切全局 provider 救不了它。**
 
 ### 17.4 附带判据：缓存命中率告诉你"慢是自找的还是物理的"
 
@@ -829,7 +859,26 @@ grep -E 'cache hit' /tmp/ollama-detached.log | tail -12 \
 
 `NUM_PARALLEL=1` 下唯一有效的杠杆是**减并发**，不是继续调 Ollama 参数。
 
-### 17.5 一句话避坑
+### 17.5 验证记录：14400s 确实生效（2026-11-05 本机）
+
+改完配置不要马上看"还报不报错"——**正在跑的请求用的是创建 client 时定下的超时**，改配置只影响之后新建的 client。必须等一个完整请求周期（本机 ≈30 分钟）。
+
+40 分钟后的实测（`~/.hermes/logs/agent.log` 里 `API call #N ... latency=`）：
+
+| 完成时间 | latency | 缓存命中 | 旧配置 1800s 下 |
+|---|---|---|---|
+| 04:41:33 | **60.9 min** | 29.6% | 必被砍 |
+| 04:59:17 | **120.5 min** | 12.4% | 必被砍 |
+| 05:02:52 | **181.8 min** | 28.0% | 必被砍 |
+| 05:06:18 | **151.9 min** | 28.1% | 必被砍 |
+
+- 4 条 latency 远超 1800s、全部成功返回 —— `read timeout` 是"连续无数据"超时，旧配置下 1800s 静默必断，做到这一点 = 配置确实被运行实例读到了。
+- 失败 5 条全部落在 04:28:57–04:37:46（改配置后 12 分钟内），都是**改配置前创建的旧 client**；04:37:46 之后零失败。
+- Ollama 侧印证：`took=30m48.859s status="200 OK"`（1848s > 1800s）。
+
+> 判据口诀：**"超 1800s 还成功"才算生效证据；"不再报错"不算**（可能只是还没跑到那个点）。
+
+### 17.6 一句话避坑
 
 > **Ollama 慢是物理，Hermes 超时是配置。**
-> 看到"全超时/一直 loading"，先分清三件事：① 请求是不是被 1800s 切断（看 `took≈30m`）；② 会话是不是钉在死链端点（查 `sessions`）；③ 缓存命中率是不是掉到 30%（减并发）。三件都不在 Ollama 侧。
+> 看到"全超时/一直 loading"，先分清三件事：① 请求是不是被 1800s 切断（看 `took≈30m`）；② 会话的 `gateway_runtime.base_url` 是不是真的连不通（别用 `billing_base_url` 判）；③ 缓存命中率是不是掉到 30%（减并发）。三件都不在 Ollama 侧。
