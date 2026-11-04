@@ -25,6 +25,7 @@ title: 踩坑排查手册
 | 模型突然从 `ollama list` 消失、权重凭空少了 18 GB | [11](#11-高危模型突然从-ollama-list-消失旧版二进制启动-gc-清库) |
 | 第三方客户端（Hermes）切到本地模型就报错，界面只说"出了点问题" | [12](#12-第三方客户端报-context-window--below-64000hermes-实证) |
 | 【Ollama 升级后】同模型同上下文突然变慢、每轮 1~3 分钟、无任何报错 | [15](#15-ollama-升级后配置静默丢失变慢一直加载的头号新坑) |
+| Hermes 多会话并发把 Ollama 打崩：任务全 loading、gateway 刷 `Connection error` 风暴 | [§16](#16-hermes-gateway-并发连接洪流把-ollama-打崩connection-error-风暴) |
 
 ---
 
@@ -663,5 +664,48 @@ open -a Ollama
 处理：`ThrottleInterval` 限制重试频率；若已陷入循环，先 `pkill -9 -f 'ollama serve'` 清掉孤儿进程，再 `bootout` + `bootstrap`。
 
 > 判断方向的一句话：**「以前是好的、同模型同上下文」→ 先比对两次启动的 `server config`，别先去怀疑模型大小或窗口长度。**
+
+---
+
+## §16. Hermes gateway 并发连接洪流把 Ollama 打崩（Connection error 风暴）
+
+**现象**：Hermes 里所有任务卡在 loading；`~/.hermes/logs/gateway.error.log` 刷屏 `API call failed ... Connection error ... base_url=http://127.0.0.1:11434/v1 model=qwen3.8:27b-mlx`，多个 `hermes-gateway_N` 线程同时失败，进入 `auto-recovery cycle N/5, retrying in 72s` 重试风暴。`/api/ps`、`/api/version` 却一切正常——serve 活着，但被连接洪流压垮。
+
+**怎么确认是「连接被冲爆」而不是推理死**（判定链）：
+
+1. 看 Ollama 上的连接数：`lsof -i -n -P | grep 11434 | grep ESTABLISHED | wc -l`；若几十个且持续增长，是客户端在并发轰。
+2. `tail -f ~/.hermes/logs/gateway.error.log` 看是不是满屏 `Connection error` / `APIConnectionError`（连接层失败，不是超时）。
+3. **实测一次单请求速度**确认 serve 本身没死：
+   ```bash
+   time curl -s --max-time 60 -X POST http://127.0.0.1:11434/api/generate \
+     -H 'Content-Type: application/json' \
+     -d '{"model":"qwen3.8:27b-mlx","prompt":"只回复两个字：正常","stream":false,"options":{"num_predict":6}}'
+   ```
+   本机正常应在 **0.5 秒内**返回。若单请求飞快、但网关一堆 Connection error → 铁证是并发连接把 accept 队列冲爆，不是引擎问题。
+4. 验证串行是否生效（区分「有没有真正限并发」）：同时发 2 个请求，`time` 总耗时 ≈ 两单请求之和（而非并行时的较大值）→ `OLLAMA_NUM_PARALLEL=1` 已生效、请求在排队逐个跑。
+
+**根因（两层）**：
+
+- **服务端没限并发**：Ollama 默认 `OLLAMA_NUM_PARALLEL` 不限制，会把同时到达的几十个 262144 上下文请求**并行**处理，KV 缓存叠加 → 内存打爆 → swap 抖动 → 每个请求几分钟甚至 Connection error。
+- **客户端在并发轰**：Hermes gateway 给每个活跃会话起一个线程，用户连发多个「继续」时，几十条 `hermes-gateway_*` 线程同一秒打 `127.0.0.1:11434`，Ollama 的 HTTP accept 队列溢出 → 新连接被拒 → `Connection error` → 重试风暴。
+- 关键细节：本次在跑的 serve 是**从旧 plist 起的**（当时只有 `KEEP_ALIVE=30m`、还没有 `NUM_PARALLEL`），所以只治了「冷启动」没治「并发」——launchd 用新 plist 重启后才真正串行。
+
+**修复（服务端兜底，一劳永逸）**：在 `com.ollama.serve.plist` 的 `EnvironmentVariables` 加一句：
+
+```xml
+<key>OLLAMA_NUM_PARALLEL</key>
+<string>1</string>
+```
+
+→ 所有请求在 Ollama 侧严格串行。这样哪怕 Hermes 开 50 个连接，serve 也只是排队逐个处理，内存有界、永不打爆 swap。**这是实现「逐个执行直到全部执行完」的服务端硬保证**，比客户端「错峰」可靠（客户端并发不可控）。
+
+**恢复动作（本次踩过的顺序）**：
+
+1. 先停 gateway 洪流：`launchctl unload ~/Library/LaunchAgents/ai.hermes.gateway.plist`（或 kill 其进程），否则 serve 一重启就被轰。
+2. 杀光旧 serve：`pkill -9 -f 'ollama serve'`，等 launchd 用新 plist 重启（带 `NUM_PARALLEL=1`）。
+3. 模型重新加载完（约 18–21 GB，稳定即满），单请求 0.5s 验证通过。
+4. `launchctl load -w ~/Library/LaunchAgents/ai.hermes.gateway.plist` 恢复网关；会话会串行排空，不再 Connection error。
+
+**为什么这条不像 §10/§14**：§10 是内存 / Second-engine 挤爆、§14 是失控 turn + revision_conflict；本条是「serve 本身健康、单请求飞快，但被并发连接冲爆 accept 队列」。三者都会让任务 loading，但治法不同——本条只加一行 `NUM_PARALLEL=1` 即可，无需动上下文长度或杀引擎。
 
 ---

@@ -75,6 +75,7 @@ cat > ~/Library/LaunchAgents/com.ollama.serve.plist <<'PLIST'
     <key>OLLAMA_CONTEXT_LENGTH</key><string>262144</string>
     <key>OLLAMA_KEEP_ALIVE</key><string>30m</string>
     <key>OLLAMA_MAX_LOADED_MODELS</key><string>1</string>
+    <key>OLLAMA_NUM_PARALLEL</key><string>1</string>
     <key>OLLAMA_LOAD_TIMEOUT</key><string>5m</string>
   </dict>
   <key>RunAtLoad</key><true/>
@@ -98,6 +99,7 @@ open -a Ollama     # App 发现 11434 已占用就不再起自己的 serve，仅
 ```
 
 > 只配这些就够。`OLLAMA_KV_CACHE_TYPE` / `OLLAMA_FLASH_ATTENTION` 对 MLX runner 经三组 A/B 证实是 **no-op**（GGUF 路线才有效）；`OLLAMA_NUM_BATCH` 在 0.40.x **根本不存在**。
+> `OLLAMA_NUM_PARALLEL=1` 是**服务端兜底**：把"逐个执行"写死在服务端，避免 Ollama 在内存宽裕时自动调高并行、被多会话并发打爆（详见 `TROUBLESHOOTING.md` §16）。它不改变 MLX 单槽位行为，只是把"严格串行"显式钉死。
 
 ### 三条验收（缺一不可）
 
