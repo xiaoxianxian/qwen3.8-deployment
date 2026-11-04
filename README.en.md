@@ -348,8 +348,8 @@ Single runs won't. In the 2026-09-10 A/B, MLX at 131072 context passed 10/10 on 
 > ⚠️ **"It fits" is not the same as "it's usable"**: a capacity ceiling is unrelated to speed; real latency is set by **per-turn prompt tokens**. This machine prefills at 348–383 tok/s, so **a 32 K prompt costs ~88 s just to read in, 78 K ~217 s, 156 K ~7 min**. Opening the window to 262144 for long-session headroom is correct, but **keep each turn's input under ~10 K tokens** (tune file_read_max_chars / tool_output / history trimming) — otherwise one prefill takes minutes and Ollama's single concurrency blocks everything behind it.
 
 - Daily single run / short-mid interaction: `qwen3.8:27b-mlx` (MLX) on the GUI's 262144 window (verified stable on this box); lower to 32768/65536 only when a second inference engine is co-resident.
-- Long agent with concurrent sessions: switch to `qwen3.8-q5` (GGUF + llama.cpp, more stable concurrency); GSQ IQ3 shares the llama.cpp path with Q5 — same concurrency behavior, smaller but slower.
-- Don't let Hermes and WorkBuddy hit MLX concurrently; stagger them.
+- Long agent with concurrent sessions: the server now enforces `OLLAMA_NUM_PARALLEL=1` (set in a launchd plist outside the App bundle, so Ollama updates can't wipe it). Ollama processes every request strictly serially — still sub-second per request, bounded memory, no swap thrash; works for both MLX and GGUF. GGUF (q5 / GSQ IQ3) was already stable under concurrency, so just pick by size.
+- Stagger clients anyway (don't let Hermes and WorkBuddy hammer the same MLX model at once), but even if they do, the server queues serially instead of getting flooded like before. If you see "all tasks loading / Connection error storm", see [TROUBLESHOOTING §16](./TROUBLESHOOTING.md#16-hermes-gateway-并发连接洪流把-ollama-打崩connection-error-风暴).
 
 ## References
 

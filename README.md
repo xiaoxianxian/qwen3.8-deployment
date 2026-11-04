@@ -430,8 +430,8 @@ MLX 原生版 `qwen3.8:27b-mlx` 自带视觉投影，直接发图即可，无需
 > ⚠️ **「装得下」不等于「快」**：容量上限与速度无关，真实等待时间由 **单轮 prompt token 数** 决定。本机预填充 348–383 tok/s，**32 K prompt 光读入就要 88 秒、78 K 要 217 秒、156 K 要 ~7 分钟**。所以窗口开到 262144 给长会话留缓冲是对的，但**单轮输入仍要压在 ~1 万 token 以内**（控制 file_read_max_chars / tool_output / 历史裁剪），否则一次 prefill 就几分钟，Ollama 单并发会把后续请求全堵死。
 
 - 日常单跑 / 短中交互：直接用 `qwen3.8:27b-mlx`（MLX），窗口沿用 GUI 的 262144（本机实测稳定）；只有多引擎同驻、内存吃紧时才临时下调到 32768/65536。
-- 长 agent 多会话并发：改用 `qwen3.8-q5`（GGUF + llama.cpp，并发更稳）；GSQ IQ3 同为 llama.cpp 路径，并发表现与 Q5 一致，但体积更小、速度更慢。
-- 别让 Hermes 与 WorkBuddy 同时并发调 MLX，错峰即可。
+- 长 agent 多会话并发：服务端已用 `OLLAMA_NUM_PARALLEL=1` 兜底（写在 App bundle 外的 launchd plist 里，Ollama 升级碰不到），Ollama 严格串行处理所有请求——单请求仍秒级、内存有界不会打爆 swap，MLX 与 GGUF 都适用。GGUF 路线（q5 / GSQ IQ3）并发本来就稳，按需选体积即可。
+- 客户端仍建议错峰（别让 Hermes 与 WorkBuddy 同时轰同一个 MLX 模型），但即使并发，服务端也会排队串行，不会再像以前那样被连接洪流冲崩。若遇到「全部任务 loading / Connection error 风暴」，见 [TROUBLESHOOTING §16](./TROUBLESHOOTING.md#16-hermes-gateway-并发连接洪流把-ollama-打崩connection-error-风暴)。
 
 ## 参考文档
 
