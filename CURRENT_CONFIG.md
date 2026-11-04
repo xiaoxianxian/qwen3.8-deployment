@@ -62,7 +62,18 @@ ollama:
 
 ## 环境变量配置
 
-> ⚠️ **血泪教训（2026-11-02）**：Ollama.app 是独立 GUI 进程，**不读 shell 环境**（`.zshrc` 里 export 的变量它收不到）。本机前几个月写在 shell 里的 `OLLAMA_KV_CACHE_TYPE` / `OLLAMA_FLASH_ATTENTION` / `OLLAMA_NUM_BATCH` / `OLLAMA_KEEP_ALIVE` 等于**从没生效过**——直到 2026-11-02 用 `launchctl setenv` + LaunchAgent plist 才真正注入。**正确方式**：`~/Library/LaunchAgents/com.user.ollama-env.plist`（登录自动注入）或当次 `launchctl setenv`，再重启 Ollama 生效。
+> 🔴 **现状（2026-11-04 起）：`ollama serve` 已由 launchd 接管，配置写死在 `~/Library/LaunchAgents/com.ollama.serve.plist`。**
+>
+> 为什么不再用 `launchctl setenv`：它写的是 launchd **会话**环境，**Ollama.app 自更新后的重启不继承**。2026-11-04 00:59 App 自动从 0.40.13 升到 0.40.14，重启后 `OLLAMA_KEEP_ALIVE` 从 `30m` 静默回落默认 `5m` —— 模型空闲 5 分钟就卸载，多会话每次重载都要重算全量 prefill（24K token ≈ 76s），表现为「一直加载、像卡死」。plist 位于 App bundle 之外，App 被替换多少次都不受影响。
+>
+> 三条验收（改完必须都过）：
+> 1. `curl -s localhost:11434/api/version` 返回版本号；
+> 2. 发一个**不带 `keep_alive` 参数**的请求后，`/api/ps` 的 `expires_at` 约为 30 分钟后（若是 5 分钟即配置丢失）；
+> 3. 打开 Ollama.app 后 `/tmp/ollama_launchd.log` 的 `address already in use` 计数不再增长（App 发现端口被占就不再起自己的 serve）。
+>
+> 完整事故链与排查步骤见 `TROUBLESHOOTING.md` §15。
+
+> ⚠️ **历史教训（2026-11-02）**：Ollama.app 是独立 GUI 进程，**不读 shell 环境**（`.zshrc` 里 export 的变量它收不到）。本机前几个月写在 shell 里的四个变量等于**从没生效过**。
 
 **结论修正（2026-11-02）**：环境变量这条路**不是堵死的**——本机在自己终端里 `launchctl setenv OLLAMA_KV_CACHE_TYPE q8_0` 成功（`getenv` 立即返回 `q8_0`），重启 Ollama 即生效；持久化靠 LaunchAgent plist。只是**不能走 shell 的 `.zshrc`**（Ollama.app 不读）。
 
@@ -72,7 +83,7 @@ ollama:
 |------|-----|--------|
 | `OLLAMA_KV_CACHE_TYPE` | — | 🔴 **2026-11-04 三组 A/B 定案：对 MLX runner 纯 no-op，不必设**（同二进制 0.40.13、同一 55K 请求，KV 增量 2.87GB vs 无 env 2.85GB；详见 §1）。11-02 的「必须开」是归因混淆。GGUF/llama.cpp 路线仍真实有效 |
 | `OLLAMA_KEEP_ALIVE` | `30m` | 模型驻留 30 分钟免重载（冷启动 2.5–6 s 只在 30 分钟无调用后才发生）。**2026-11-03 老板最终裁定 30m**（原话纠正：不是 60 秒、也不是 -1，是 30 分钟，与公众号文章 `OLLAMA_KEEP_ALIVE 30m` 一致）；-1 会永久占 25 GB 显存 idle 不释放，30m 是省显存与免冷启的折中。⚠️ 从 -1 改回 30m 时有个坑：改 plist 文件 ≠ 更新运行时环境，`launchctl setenv` 的旧 `-1` 会残留（重启 Ollama 仍显示 `Forever`），需 `launchctl unload`+`load` 或本人终端重新 `setenv`（见 `TROUBLESHOOTING.md` §6） |
-| `OLLAMA_NUM_BATCH` | `2048` | prefill 提速（batch 512→2048 少 forward pass），大 prompt 受益明显 |
+| `OLLAMA_NUM_BATCH` | **不存在** | 🔴 2026-11-04 核实：0.40.0/0.40.13/0.40.14 的二进制、`serve --help`、`envconfig/config.go` 均无此变量。早前「prefill 227 tok/s 归功于 NUM_BATCH=2048」是错误归因（真实原因是热态 + 停掉 MTPLX 第二引擎）。别再配 |
 | `OLLAMA_FLASH_ATTENTION` | `1` | MLX 后端内置常开，变量基本 no-op，写上无妨 |
 
 > ✅ **关闭 Hermes 对本地长请求的主动 abort（执行层不拦截）**：`HERMES_STREAM_STALE_GIVEUP=0`（默认 5）。源码 `agent/chat_completion_local.py:stale_giveup()` 读此环境变量；连续 stale 次数 ≥ 阈值即立即 abort 整次调用（报错原文 "5 consecutive stale attempts — aborting this call"）。设为 0 关闭该断路器——之后本地长请求（大 prefill / 长会话）由模型侧自己慢跑或报错，Hermes 不再替你打断。写入 `~/.hermes/.env`，**重启 Hermes 生效**。配套：`agent.local_stream_stale_timeout`（默认 900s）是单次请求静默宽限，正常 prefill 远在其内，一般无需改（详见下方「Hermes 历史压缩」）。
@@ -179,14 +190,14 @@ eval_duration = 13,164,898,708 ns (≈13.16s)
 | 场景 | 数字 | 出处 | 说明 |
 |---|---|---|---|
 | **短 prompt 平均 prefill**（12 题 A/B） | **~224 tok/s** | `A_B实测对比报告.md`（MLX 4-bit / 12 题均值，Ollama `/api/ps` 顶层字段 `prompt_eval_count/prompt_eval_duration`） | 这是老板记忆里「200+ tok/s」的原始出处 |
-| **长 prompt 实跑**（NUM_BATCH=2048） | **~227 tok/s** | 22:05–22:07 server.log（55,614 token 请求，1512 tok/9s） | 大请求稳跑、无 swap。⚠️ 11-04 归因修正：当时 q8_0 同时在场（后证实 no-op），提速归因于 NUM_BATCH=2048（未单独 A/B）与热态 |
+| **长 prompt 实跑** | **~227 tok/s** | 22:05–22:07 server.log（55,614 token 请求，1512 tok/9s） | 大请求稳跑、无 swap。⚠️ 11-04 二次归因修正：当时 q8_0 已证实 no-op；`OLLAMA_NUM_BATCH` **在 0.40.x 根本不存在**（原归因作废），提速来自热态 + 停掉 MTPLX 第二引擎 |
 | **短 prompt 单次 prefill**（350-token 生成那次） | **~113.7 tok/s** | 本次 23:00 实测（`prompt_eval_count=26 / 228.5ms`） | 短 prompt 时 batch 利用率不满，数值偏低 |
 | **短 prompt prefill 理论值**（文档旧值） | **348–383 tok/s** | 文档历史值 | 是 M5 Pro GPU 算力上限（~19 TFLOPS）的理论值；实际 A/B 均值 224 tok/s 低于此，原因是 12 题 A/B 的 prompt 体量与 batch 利用率差异 |
 
 **结论**：
 - 短 prompt（1–5K）实际 prefill 在 100–224 tok/s 之间，长 prompt（50K+）在 227 tok/s 上下，理论上限 348–383 tok/s。
 - **224 tok/s 的 prefill 不是 bug**，是 A/B 12 题的稳态均值（batch 利用率不是理论峰值），跟老板记忆对得上。
-- 长 prompt prefill 稳定在 ~227 tok/s 不回落（11-04 归因修正：功劳在 NUM_BATCH=2048 与停掉第二引擎；q8_0 已证实对 MLX no-op），这是**「一直 loading」变「能跑完」的关键**。
+- 长 prompt prefill 稳定在 ~227 tok/s 不回落（11-04 二次归因修正：`OLLAMA_NUM_BATCH` 在 0.40.x 不存在、q8_0 对 MLX no-op，功劳在热态与停掉第二引擎），这是**「一直 loading」变「能跑完」的关键**。
 
 > ⚠️ 这是 **单会话、无并发** 时的数字。多会话并发时，单请求的实际体感 = 排队时间 + prefill + decode 三者之和；Ollama 单并发（`NUM_PARALLEL=1`）决定了排队时间是主要瓶颈（见 `TROUBLESHOOTING.md` §13 补充实证）。
 
@@ -246,7 +257,7 @@ eval_duration = 13,164,898,708 ns (≈13.16s)
 
 > 这是 Qwen3.8 整套踩坑经验的**可复用骨架**。换模型时**不必重走弯路**——把下面每一项的"值"替换成新模型/新配置，但**顺序和判断逻辑照搬**。每项都标了"为什么"和"验法"，照着做即可。
 >
-> ⚠️ **Qwen4-27B 特别提醒**：以下值（262144 / q8_0 / NUM_BATCH=2048 / 26.5 tok/s 等）是 **Qwen3.8 在 M5 Pro 48GB 上实测**的。Qwen4 的模型上限、MLX 是否支持、最优量化档、最优窗口**都要重新实测**，本清单只是"该测什么、按什么顺序、怎么判定"的方法，不是可直接抄的数值。
+> ⚠️ **Qwen4-27B 特别提醒**：以下值（262144 / q8_0 是否有效 / 26.5 tok/s 等）是 **Qwen3.8 在 M5 Pro 48GB 上实测**的。Qwen4 的模型上限、MLX 是否支持、最优量化档、最优窗口**都要重新实测**，本清单只是"该测什么、按什么顺序、怎么判定"的方法，不是可直接抄的数值。
 
 ### 第 0 步：硬件与环境（不变）
 
@@ -278,10 +289,10 @@ eval_duration = 13,164,898,708 ns (≈13.16s)
 |---|---|---|---|
 | `OLLAMA_KV_CACHE_TYPE` | — | **MLX 路线 no-op（11-04 三组 A/B 定案），不必设**；GGUF 路线才有效 | 换模型先跑 A/B 再下结论，别凭 server 日志 env 可见就判定生效 |
 | `OLLAMA_KEEP_ALIVE` | `30m` | 驻留 30 分钟免重载（老板裁定 30m，非 -1、非 60 秒） | 必开，值按你的取舍定 |
-| `OLLAMA_NUM_BATCH` | `2048` | prefill 提速 | 必开 |
+| `OLLAMA_NUM_BATCH` | — | 0.40.x 无此变量，别配 | 无效 |
 | `OLLAMA_FLASH_ATTENTION` | `1` | MLX 内置常开，no-op | 写上无妨 |
 
-- 🔴 **写入方式**：Ollama.app 是独立 GUI 进程，**不读 `.zshrc`**！必须 `launchctl setenv`（本人终端）或 `~/Library/LaunchAgents/com.user.ollama-env.plist`（持久），再**重启 Ollama**。
+- 🔴 **写入方式（2026-11-04 更新）**：Ollama.app 是独立 GUI 进程，**不读 `.zshrc`**。且 `launchctl setenv` 写的是会话环境，**App 自更新重启不继承**——每次升级都会悄悄打回默认值。**现行做法：`ollama serve` 交由 launchd 带环境变量启动**，配置写死 `~/Library/LaunchAgents/com.ollama.serve.plist`（App bundle 之外，升级碰不到），详见 `TROUBLESHOOTING.md` §15。
 - 🔴 **改值时的坑**：`launchctl setenv` 的值会**残留在登录会话运行时环境**里，改 plist 文件**不会自动更新运行时**。从 `-1` 改回 `30m` 后，重启 Ollama 仍读旧 `-1`（`ollama ps` 显示 `Forever`）。必须 `launchctl unload`+`load` plist 或本人终端重新 `setenv`（详见 `TROUBLESHOOTING.md` §6）。
 - 🔴 **`launchctl setenv` 只能本人终端跑**：macOS GUI 登录会话域边界，**agent / WorkBuddy 沙箱进程连 `dangerouslyDisableSandbox` 都报 `Not privileged to set domain environment`**——这不是沙箱开关能绕过的，必须用户本人终端执行。
 - **验法**：`launchctl getenv OLLAMA_KV_CACHE_TYPE` 立即回显 `q8_0`；重启后看 `server.log` 启动段有 `OLLAMA_KV_CACHE_TYPE:q8_0`；`ollama ps` 的 `UNTIL` 列显示 `until <30分钟后时刻>`（而非 `Forever`）即 KEEP_ALIVE=30m 生效。

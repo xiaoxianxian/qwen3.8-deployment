@@ -24,6 +24,7 @@ title: 踩坑排查手册
 | 系统更新后全挂（探针 0 字节 / 每请求 2-5 分钟 / 模型加载不上） | [10](#10-卡死--模型加载不上--每请求几分钟含-macos-27-后集中爆发的那次) |
 | 模型突然从 `ollama list` 消失、权重凭空少了 18 GB | [11](#11-高危模型突然从-ollama-list-消失旧版二进制启动-gc-清库) |
 | 第三方客户端（Hermes）切到本地模型就报错，界面只说"出了点问题" | [12](#12-第三方客户端报-context-window--below-64000hermes-实证) |
+| 【Ollama 升级后】同模型同上下文突然变慢、每轮 1~3 分钟、无任何报错 | [15](#15-ollama-升级后配置静默丢失变慢一直加载的头号新坑) |
 
 ---
 
@@ -490,7 +491,7 @@ hermes resume
 |------|------|------|
 | 优化项不生效（环 2） | 走 `launchctl setenv`（用户会话域）或 LaunchAgent plist `~/Library/LaunchAgents/com.user.ollama-env.plist`，再**重启 Ollama** | server 日志实锤 `OLLAMA_KV_CACHE_TYPE:q8_0` / `FLASH_ATTENTION:true`；KEEP_ALIVE 最终定 **`30m`**（老板 11-03 裁定，与公众号文章一致；此前救机时设的 `-1` 已作废） |
 | swap 至死（环 2→3 连接点） | 🔴 11-04 归因修正：真修复是**停 MTPLX 第二引擎 + 砍单轮 prompt**；q8_0 对 MLX 经三组 A/B 实测 no-op（KV 增量 2.87 vs 2.85GB），「KV 砍半到 ~25GB」为错误估算 | 109K 请求稳定跑完属实，但功劳不在 q8_0 |
-| prefill 慢（环 3） | `OLLAMA_NUM_BATCH=2048` + `KEEP_ALIVE=30m`（驻留 30 分钟免重载） | 大 prompt prefill 提速、不再每次重载 |
+| prefill 慢（环 3） | `OLLAMA_KEEP_ALIVE=30m`（驻留 30 分钟免重载）；控制单轮 prompt 大小 | 大 prompt 不再每次重载重算、prefill 不回落。⚠️ 11-04 二次修正：`OLLAMA_NUM_BATCH` 在 0.40.x **不存在**，原归因作废 |
 | 历史不压缩（环 3 真凶） | **三选一**：① 云端快速摘要模型（配 `auxiliary.compression` 指向已配 key 的 DeepSeek/agnes，历史被压到 ~15K，代价：历史出机器）；② 本地保持短会话（`micro_compact` 已开 + 手动 `/new` 或 `/compress`）；③ 接受 q8_0 让慢请求能跑完 | 见 `CURRENT_CONFIG.md`「Hermes 历史压缩」节 |
 | 慢被当错杀（环 4） | `HERMES_STREAM_STALE_GIVEUP=0`（写入 `~/.hermes/.env`，重启 Hermes 生效）：关闭主动 abort，慢就慢、报错就报错，反馈权交给模型侧 | 重启后 `errors.log` 零次 stale-abort |
 
@@ -574,3 +575,93 @@ hermes resume                        # 确认干净后恢复
 - 电脑重启后：Ollama.app 自启 server（context 从 GUI db 读）、Hermes Desktop 自启 gateway——基础设施无需手动干预；
 - 大请求（如 /compress 摘要 69K 历史）耗时 **5–6 分钟**，期间**单并发队列堵住其他一切操作**（含切模型），看起来「没反应」其实在跑；
 - 27B 本地速度基线：decode ~10–39 tok/s（MTP 投机解码生效时更高）、prefill 冷实例首次大请求 ~165 tok/s、热态 ~590 tok/s。
+
+---
+
+## §15. Ollama 升级后配置静默丢失——「变慢/一直加载」的头号新坑
+
+> 这一节的结论**修正 §14 里对「内存 34.3GB」的引用**：那个数字来自 MTPLX 同驻场景，不是 q8_0 丢失造成的。经三组 A/B 确认，`OLLAMA_KV_CACHE_TYPE` / `OLLAMA_FLASH_ATTENTION` 对 MLX runner 是 no-op，**丢了对速度没有可测量影响**。真正致命的是 `OLLAMA_KEEP_ALIVE`。
+
+### 症状
+- Ollama 更新后的某一天，同样的模型、同样的上下文，突然变慢：每轮从 2~5 秒变成 1~3 分钟；
+- 新老会话都「一直加载」，看起来像卡死；
+- **没有任何报错**：`ollama ps` 正常、API 正常返回 200、日志里没有 error。
+
+### 为什么升级会丢配置（这是设计的必然，不是 bug）
+`launchctl setenv` 写的是 **launchd 用户会话（Aqua session）的环境变量**。Ollama.app 正常启动时会继承它，但**App 自更新后的重启走的是另一条路径，不继承**。于是升级那一刻起，所有通过 setenv 注入的变量全部回落到编译默认值。
+
+2026-11-04 实测记录（同一台机，两次启动）：
+
+| 变量 | 00:58 启动（0.40.13） | 03:16 启动（升级到 0.40.14 后） | 实际影响 |
+|---|---|---|---|
+| `OLLAMA_KEEP_ALIVE` | `30m` | **`5m`（默认）** | 🔴 **真凶**：空闲 5 分钟就卸载模型，多会话每次重载都要重算全量 prefill（24K token ≈ 76s） |
+| `OLLAMA_KV_CACHE_TYPE` | `q8_0` | 空（f16） | 对 MLX no-op，无可测影响 |
+| `OLLAMA_FLASH_ATTENTION` | `true` | `false` | 对 MLX no-op，无可测影响 |
+| `OLLAMA_CONTEXT_LENGTH` | `262144` | `262144` | 正常（此值由 GUI `db.sqlite` 决定，不靠环境变量） |
+
+### 判据：唯一可信的取证位置
+`launchctl getenv` **不可信**——在非 GUI 会话的 shell 里它一律返回空，即使变量确实设了。唯一可信的是进程自己启动时打印的生效配置：
+
+```bash
+# 每个 serve 进程启动都会打一行，取最新那个日志的首个 config 行
+for f in $(ls -t ~/.ollama/logs/server*.log); do
+  L=$(grep -m1 'server config' "$f") && [ -n "$L" ] && {
+    echo "$f"; echo "$L" | sed -E 's/.*env="map\[//; s/\]".*//' | tr ' ' '\n' \
+      | grep -E 'OLLAMA_(KEEP_ALIVE|CONTEXT_LENGTH|NUM_PARALLEL)'; break; }
+done
+```
+
+行为侧验证更直接（**请求里不要带 `keep_alive` 参数**，否则测的是请求值不是服务端默认值）：
+
+```bash
+curl -s localhost:11434/api/ps | python3 -c "
+import json,sys,datetime
+now=datetime.datetime.now(datetime.timezone.utc)
+for m in json.load(sys.stdin)['models']:
+    t=datetime.datetime.fromisoformat(m['expires_at'].replace('Z','+00:00'))
+    print(m['name'], round((t-now).total_seconds()/60), '分钟后卸载')
+"
+# 期望约 30 分钟；若是 5 分钟即为配置丢失
+```
+
+### 根治：把 serve 交给 launchd，配置写进 plist（App 升级再也碰不到）
+**这是唯一不靠「记得改回来」的方案。** 把 `ollama serve` 从 App 手里接管过来，环境变量写死在 `~/Library/LaunchAgents/com.ollama.serve.plist` 里；plist 在 App bundle 之外，App 被替换/升级完全不影响它。
+
+```xml
+<key>EnvironmentVariables</key>
+<dict>
+  <key>OLLAMA_HOST</key><string>127.0.0.1:11434</string>
+  <key>OLLAMA_CONTEXT_LENGTH</key><string>262144</string>
+  <key>OLLAMA_KEEP_ALIVE</key><string>30m</string>
+  <key>OLLAMA_MAX_LOADED_MODELS</key><string>1</string>
+  <key>OLLAMA_LOAD_TIMEOUT</key><string>5m</string>
+</dict>
+<key>KeepAlive</key><true/>
+<key>ThrottleInterval</key><integer>10</integer>
+```
+
+启动顺序要点（顺序错了会踩死循环，见下）：
+
+```bash
+# 1) 先确保 11434 没有残留进程（App 退出后 serve 可能变孤儿）
+killall Ollama 2>/dev/null; pkill -9 -f 'ollama serve'
+# 2) 由 launchd 拉起，它独占端口
+launchctl bootout  gui/$(id -u)/com.ollama.serve 2>/dev/null
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.ollama.serve.plist
+# 3) 再打开 App —— 它发现端口已占用就不再起自己的 serve，仅作 GUI 连接
+open -a Ollama
+```
+
+验证三件事：
+1. `curl -s localhost:11434/api/version` 有版本号；
+2. `/api/ps` 的 `expires_at` 约 30 分钟（不带参数的请求）；
+3. 打开 App 后，`/tmp/ollama_launchd.log` 的 `address already in use` 计数**不再增长**。
+
+### 踩坑记录：`KeepAlive: true` + 端口被占 = 每秒重启一次
+如果 App 抢先占了 11434（例如你先手动开了 App，launchd 的 serve 后启动），launchd 会把它当成「进程崩溃」，`KeepAlive` 立刻重启 → 再撞端口 → 无限循环。实测刷出 188 条 `bind: address already in use`。
+
+处理：`ThrottleInterval` 限制重试频率；若已陷入循环，先 `pkill -9 -f 'ollama serve'` 清掉孤儿进程，再 `bootout` + `bootstrap`。
+
+> 判断方向的一句话：**「以前是好的、同模型同上下文」→ 先比对两次启动的 `server config`，别先去怀疑模型大小或窗口长度。**
+
+---
