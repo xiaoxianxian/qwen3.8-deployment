@@ -7,13 +7,8 @@ title: English Guide
 
 A practical local-LLM deployment guide for macOS Apple Silicon users, based on real-world testing on an M5 Pro / 48GB. Covers the Ollama + MLX vs GGUF quantization comparison, MTP speculative-decoding acceleration, China-region mirror downloads, and a full troubleshooting playbook.
 
-> **Last verified: 2026-11-05** · Ollama 0.40.14 · macOS 27.2 (M5 Pro / 48GB)
+> **Last verified: 2026-09-15** · Ollama 0.33.3 · macOS 26 (M5 Pro / 48GB)
 > Supported: **Ollama ≥ 0.30**. Earlier versions have an MLX large-context timeout bug (see [Issue 2](./TROUBLESHOOTING.md#2-mlx-超时-500-context-canceled)); check your version before starting.
->
-> **Three behavior changes since 0.40 — older tutorials will mislead you** (verified 2026-11-02):
-> ① The real context-length switch is **the Ollama.app setting** (`settings.context_length` in `db.sqlite`), which **overrides** the Modelfile's `num_ctx`. Editing the Modelfile and seeing no change is normal.
-> ② On the MLX path, **stop hand-writing `draft_num_predict`** — 0.40 self-tunes speculative decoding, and setting it manually dropped throughput from 34.9 to 28.0 tok/s.
-> ③ On a 48 GB machine, **never copy 262144 into your config** — it always triggers evict (the model is repeatedly evicted and never loads). Use 32768 for daily work.
 
 ## Who this is for
 
@@ -53,7 +48,7 @@ A practical local-LLM deployment guide for macOS Apple Silicon users, based on r
 ¹ Early short benchmark: short context, non-uniform temperature, no MTP stacking, single-task peak (MLX early split: writing 29.0 / structured 34.2 tok/s).
 ² Strict 12-question A/B: temperature=0, 12 unified questions, MTP on for all four, serial run-then-unload. The two methods differ in methodology, so ratios aren't directly divisible — use as order-of-magnitude only.
 
-> **MLX native (`qwen3.8:27b-mlx`)** is the best choice: ~2× faster, sub-second first token. **Since 0.40 you should not enable MTP manually on the MLX path** — the runner self-tunes it, and writing `draft_num_predict 3` by hand actually slows things down. Only the GGUF path still needs it set explicitly.
+> **MLX native (`qwen3.8:27b-mlx`)** is the best choice: ~2× faster, sub-second first token. MTP speculative decoding must be enabled manually (`draft_num_predict 3`); it's shared by both GGUF and MLX, not MLX-exclusive.
 > For maximum quality with enough RAM, choose **Q8_K_XL** (8-bit, near-lossless).
 
 Full comparison: [性能对比与量化指南.md (Quantization Guide, Chinese)](./性能对比与量化指南.md)
@@ -141,14 +136,12 @@ The MLX native build is usable right after `ollama pull`. The GGUF (Q5 / GSQ IQ3
 
 ```dockerfile
 FROM qwen3.8:27b-mlx
-PARAMETER num_ctx 262144           # stable on this 48GB box (MLX KV dynamic); GUI overrides
-# Do NOT add draft_num_predict: the 0.40+ MLX runner self-tunes speculative decoding
+PARAMETER num_ctx 131072
+PARAMETER draft_num_predict 3     # MTP speculative decoding (Qwen3.8 built-in acceleration)
 PARAMETER temperature 0.7
 PARAMETER top_p 0.95
 PARAMETER top_k 20
 ```
-
-> ⚠️ `num_ctx` here is only the model default — **the Ollama.app context setting overrides it**. Trust the `CONTEXT` column of `ollama ps`.
 
 **GGUF Q5_K_M (FROM Ollama tag; needs multimodal template + MTP + vision projector):**
 
@@ -172,7 +165,7 @@ TEMPLATE """{{- if .System }}<|system|>
 <|assistant|>
 {{ if .ReasoningContent }}<|reserved_special_token_145|>{{ .ReasoningContent }}<|end|>
 {{ end }}{{ .Response }}"""
-PARAMETER num_ctx 262144
+PARAMETER num_ctx 131072
 PARAMETER draft_num_predict 3
 ```
 
@@ -182,7 +175,7 @@ PARAMETER draft_num_predict 3
 FROM ./Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf   # for IQ3_XXS use the -IQ3_XXS- file
 FROM ./mmproj-Qwen3.8-27B-BF16.gguf
 TEMPLATE """(identical multimodal template as GGUF Q5 above)"""
-PARAMETER num_ctx 262144
+PARAMETER num_ctx 131072
 PARAMETER draft_num_predict 3
 ```
 
@@ -192,47 +185,29 @@ ollama create qwen3.8-q5 -f Modelfile.q5
 ollama create qwen3.8-gsq-iq3s -f Modelfile.gsq
 ```
 
-### Step 6: Set the context length (stop using env vars on 0.40+)
-
-**Know who actually owns this setting — most people get this wrong:**
-
-| Where it's set | Priority |
-|---|---|
-| **Ollama.app Settings → `settings.context_length` in `db.sqlite`** | **Highest; overrides the two below** |
-| Modelfile / request-body `num_ctx` | Next |
-| `OLLAMA_CONTEXT_LENGTH` env var | Lowest (and `launchctl setenv` dies on reboot) |
+### Step 6: Configure global environment variables
 
 ```bash
-# 1. Check what the GUI actually has
-sqlite3 "file:$HOME/Library/Application Support/Ollama/db.sqlite?mode=ro" \
-  "select context_length from settings;"
+# macOS user-level global config (Ollama runs as a user LaunchAgent, no sudo needed)
+launchctl setenv OLLAMA_CONTEXT_LENGTH 131072
+launchctl setenv OLLAMA_FLASH_ATTENTION 1
+launchctl setenv OLLAMA_KV_CACHE_TYPE q8_0
+launchctl setenv OLLAMA_KEEP_ALIVE 30m
 
-# 2. To change it you must QUIT Ollama.app fully (pkill-ing serve is not enough — the GUI writes back)
-osascript -e 'quit app "Ollama"'
-sqlite3 "$HOME/Library/Application Support/Ollama/db.sqlite" \
-  "update settings set context_length=32768 where id=1;"
-
-# 3. Restart and verify (the CONTEXT column is the effective value)
-open -a Ollama && sleep 10 && ollama ps
+# Apply: restart Ollama so env vars take effect
+pkill -f "ollama serve" && sleep 2 && open -a Ollama
 ```
 
-**Pick by RAM (long-chat only, no agent)**: 48 GB → **32768**; 32 GB → 16384; only ≥64 GB should consider 131072. **But if you connect any agent client (Hermes / Claude Desktop / Cursor / Codex with tool use), 64 K overflows and truncates in real long sessions — set the model max 262144** (this machine: 65536 was not enough, 262144 is stable). **"262144 always evicts on 48 GB" was a misread of a contention log; a single model runs fine at 262144.**
+**What each variable does:**
 
-> **Agent clients must use the model max 262144, not 65536.** Hermes Agent hard-rejects anything below 64 K (`MINIMUM_CONTEXT_LENGTH = 64_000`) — so 32768 won't even start. But 64 K is only the *startup* floor; real agent sessions (tool outputs + multi-turn history) blow past 64 K and get silently truncated, breaking tool calls. This machine: 65536 was still not enough, 262144 is stable. Such clients also need `model.context_length` **and** `model.ollama_num_ctx` raised to 262144. Note that **the `/v1` endpoint ignores the request-level `num_ctx`**, so the server window stays where it was — both sides must change. Full walkthrough: `TROUBLESHOOTING.md` §12.
+| Variable | Effect | If unset |
+|----------|--------|----------|
+| `OLLAMA_CONTEXT_LENGTH=131072` | global default 128K context | model falls back to 4096; long docs silently truncated |
+| `OLLAMA_FLASH_ATTENTION=1` | +30–50% long-context speed | slower |
+| `OLLAMA_KV_CACHE_TYPE=q8_0` | quantize KV cache, halve RAM | high RAM, may swap |
+| `OLLAMA_KEEP_ALIVE=30m` | keep model in RAM 30 min | ~6s cold start per call |
 
-> Why bigger isn't better: the window is a **capacity** knob, not a **speed** knob. This machine prefills at a **measured ~224 tok/s** (348–383 tok/s is the GPU theoretical ceiling), so a 32 K prompt costs ~145 s just to read in, and 78 K ~348 s. Daily chat and coding rarely need more than 10 K.
-
-**Env var reference (4 are mandatory on 48GB + 262144 + local 27B):**
-
-| Variable | Value | Why |
-|----------|-------|-----|
-| `OLLAMA_CONTEXT_LENGTH` | — | **Not recommended**: overridden by the GUI setting anyway |
-| `OLLAMA_FLASH_ATTENTION` | `1` | Built-in on the MLX backend, effectively a no-op; harmless to set |
-| `OLLAMA_KV_CACHE_TYPE` | — | **No-op on the MLX runner** (2026-11-04 triple A/B, same 0.40.13 binary, same 55K-token request: KV delta 2.87 GB with vs 2.85 GB without). MLX allocates KV dynamically (~53 KiB/token, full window ≈16 GB), so 262144 runs fine without it. Still genuinely effective on the GGUF/llama.cpp path (`qwen3:4b`: 4608 → 2448 MiB) |
-| `OLLAMA_KEEP_ALIVE` | `30m` | Keep the model resident for 30 minutes (cold reload alone is only 2.5–6 s). **2026-11-03 owner decision: `30m`** (matches the public article), not `-1` (which pins 25 GB idle VRAM forever). Gotcha when changing the value: `launchctl setenv` leaves the old value in the runtime env — after editing the plist you must `launchctl unload`+`load` or re-run `setenv` (see TROUBLESHOOTING §6) |
-| `OLLAMA_NUM_BATCH` | **does not exist** | 🔴 Verified 2026-11-04: absent from the 0.40.0 / 0.40.13 / 0.40.14 binaries, `serve --help`, and `envconfig/config.go`. The earlier "prefill 227 tok/s thanks to NUM_BATCH=2048" was a misattribution (real cause: warm state + MTPLX second engine stopped) |
-
-> **Persistence (updated 2026-11-04 — this is the only recommended way)**: let launchd run `ollama serve` with the env baked into `~/Library/LaunchAgents/com.ollama.serve.plist`. **Do not use `launchctl setenv`** — it writes session env, and **Ollama.app's post-self-update restart does not inherit it**, so every upgrade silently resets your tuning (that is exactly how `KEEP_ALIVE=30m` was lost on 2026-11-04 and fell back to 5m, showing up as "stuck loading"). The plist lives outside the app bundle, so upgrades cannot touch it. Full steps and acceptance checks: `TROUBLESHOOTING.md` §15. Also **never use `.zshrc`** — Ollama.app is a standalone GUI process and does not read shell env.
+> `launchctl setenv` is lost after a Mac reboot — re-run it. For a permanent fix, write the vars into Ollama's LaunchAgent plist.
 
 ### Step 7: Verify the install
 
@@ -240,9 +215,8 @@ open -a Ollama && sleep 10 && ollama ps
 # Show model info
 ollama show qwen3.8:27b-mlx
 
-# Confirm the effective context length: the CONTEXT column of ollama ps
-# (ollama show only prints the tag's baked-in value, not the runtime value)
-ollama ps
+# Confirm context length took effect (should print 131072, not 4096)
+ollama show qwen3.8:27b-mlx | grep num_ctx
 
 # Test a chat
 ollama run qwen3.8:27b-mlx "Hi, introduce yourself in one sentence"
@@ -331,7 +305,7 @@ Full data: [A_B实测对比报告.md (A/B Report, Chinese)](./A_B实测对比报
 > Full troubleshooting playbook (9 issues + root cause + fix commands): **[TROUBLESHOOTING.md](./TROUBLESHOOTING.md)**. High-frequency answers below.
 
 ### Q1: Out of memory?
-Size the context by RAM: **this 48 GB box runs 262144 stably** (MLX KV is dynamically allocated, idle ~18–31GB; only drop to 32768/65536 if a second engine co-resides). The old "262144 always evicts on 48 GB" was a misread of a contention log and is void (see `CURRENT_CONFIG.md`). If still tight, downsize quantization (IQ3_S / Q4_K_M) and confirm **no second inference engine is running**.
+Keep `num_ctx 131072` (stable for single runs); if RAM is tight, lower to 65536, then downsize quantization (Q4_K_M) if still insufficient.
 
 ### Q2: Generation is slow?
 Check for Swap — make sure the model is fully loaded into RAM.
@@ -343,13 +317,11 @@ The MLX native `qwen3.8:27b-mlx` has a built-in vision projector — just send a
 No. The local model runs fully offline.
 
 ### Q5: Will MLX blow up VRAM at 128K context?
-Single runs won't. In the 2026-09-10 A/B, MLX at 131072 context passed 10/10 on a 5-dimension question over 2 rounds with **zero OOM**; this box later ran **262144** (model max) single-run stably too (idle ~18–31GB, MLX KV dynamic). The GSQ / GGUF path (Q5, IQ3, etc.) is the same llama.cpp engine and is equally stable at 131K+ single-run. The occasional "intermittent VRAM overflow" was caused by **multiple sessions/processes calling the same MLX model at once**, stacking KV-cache VRAM — not the context being too large.
+Single runs won't. In the 2026-09-10 A/B, MLX at 131072 context + MTP passed 10/10 on a 5-dimension question over 2 rounds with **zero OOM**; the GSQ / GGUF path (Q5, IQ3, etc.) is the same llama.cpp engine and is equally stable at 131K single-run. The occasional "intermittent VRAM overflow" was caused by **multiple sessions/processes calling the same MLX model at once**, stacking KV-cache VRAM — not the 128K context being too large.
 
-> ⚠️ **"It fits" is not the same as "it's usable"**: a capacity ceiling is unrelated to speed; real latency is set by **per-turn prompt tokens**. This machine prefills at a **measured ~224 tok/s** (348–383 tok/s is the GPU theoretical ceiling), so **a 32 K prompt costs ~145 s just to read in, 78 K ~348 s, 156 K ~12 min**. Opening the window to 262144 for long-session headroom is correct, but **keep each turn's input under ~10 K tokens** (tune file_read_max_chars / tool_output / history trimming) — otherwise one prefill takes minutes and Ollama's single concurrency blocks everything behind it.
-
-- Daily single run / short-mid interaction: `qwen3.8:27b-mlx` (MLX) on the GUI's 262144 window (verified stable on this box); lower to 32768/65536 only when a second inference engine is co-resident.
-- Long agent with concurrent sessions: the server now enforces `OLLAMA_NUM_PARALLEL=1` (set in a launchd plist outside the App bundle, so Ollama updates can't wipe it). Ollama processes every request strictly serially — still sub-second per request, bounded memory, no swap thrash; works for both MLX and GGUF. GGUF (q5 / GSQ IQ3) was already stable under concurrency, so just pick by size.
-- Stagger clients anyway (don't let Hermes and WorkBuddy hammer the same MLX model at once), but even if they do, the server queues serially instead of getting flooded like before. If you see "all tasks loading / Connection error storm", see [TROUBLESHOOTING §16](./TROUBLESHOOTING.md#16-hermes-gateway-并发连接洪流把-ollama-打崩connection-error-风暴).
+- Daily single run / short-mid interaction: use `qwen3.8:27b-mlx` (MLX, full 131k + MTP) — fastest and most stable.
+- Long agent with concurrent sessions: switch to `qwen3.8-q5` (GGUF + llama.cpp, more stable concurrency); GSQ IQ3 shares the llama.cpp path with Q5 — same concurrency behavior, smaller but slower.
+- Don't let Hermes and WorkBuddy hit MLX concurrently; stagger them.
 
 ## References
 
