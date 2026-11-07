@@ -225,6 +225,8 @@ pkill -f "ollama serve" && sleep 2 && open -a Ollama
 
 > `launchctl setenv` 在重启 Mac 后会失效，重启后重跑一遍即可；想一劳永逸，把变量写进 Ollama 的 LaunchAgent plist。
 
+> **多会话轮跑（2026-11-07 复核定版）**：`OLLAMA_NUM_PARALLEL` 设 `2`（131072×2 的总 KV 与单槽 262144 相同，内存不涨）。注意：MLX runner + Qwen3_5 架构在 ollama 0.40.15 实测仍为单序列串行解码，但这**不影响多会话轮跑**——串行按请求 FIFO 轮换本身就是「每个会话执行一会再轮下一个」，配合有界上下文即可多会话互不饿死。本机一劳永逸的 plist 实际路径是 `~/Library/LaunchAgents/com.user.ollama-serve.plist`（launchd KeepAlive 直接带环境变量拉起 serve）；验证实际生效值看 `ollama ps` 的 CONTEXT 列。**不要并排放两个 ollama serve 的 plist**（没重启机器时新写的那个永远不会被加载，改它等于改空气）。详见《调优与避坑指南》2026-11-07 节。
+
 ### 第七步：验证安装
 
 ```bash
