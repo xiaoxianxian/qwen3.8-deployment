@@ -18,15 +18,17 @@ title: 当前配置与验证
 ## 环境变量配置 (全局生效)
 
 ```bash
-OLLAMA_CONTEXT_LENGTH=131072    # 上下文长度：128K
+OLLAMA_CONTEXT_LENGTH=262144   # 上下文长度：256K（生产值；131072 为省内存可选项）
+OLLAMA_NUM_PARALLEL=1          # 并发槽位：262144 时必须为 1，否则 KV 叠加触发 swap
 OLLAMA_FLASH_ATTENTION=1        # 启用 FlashAttention
 OLLAMA_KV_CACHE_TYPE=q8_0       # KV 缓存精度：Q8_0
-OLLAMA_KEEP_ALIVE=30m           # 模型保持加载时间
+OLLAMA_KEEP_ALIVE=30m           # 模型保持加载时间（空闲 30 分钟后卸载）
 ```
 
-**设置方式：**
+**设置方式（launchd 单一真相：`~/Library/LaunchAgents/com.user.ollama-serve-main.plist`，KeepAlive 带环境变量拉起 serve；不要并排放两个 ollama serve 的 plist）：**
 ```bash
-launchctl setenv OLLAMA_CONTEXT_LENGTH 131072
+launchctl setenv OLLAMA_CONTEXT_LENGTH 262144
+launchctl setenv OLLAMA_NUM_PARALLEL 1
 launchctl setenv OLLAMA_FLASH_ATTENTION 1
 launchctl setenv OLLAMA_KV_CACHE_TYPE q8_0
 launchctl setenv OLLAMA_KEEP_ALIVE 30m
@@ -53,7 +55,7 @@ pkill -f "ollama serve" && sleep 2 && open -a Ollama
 
 | 工具 | 状态 | 版本 |
 |------|------|------|
-| Ollama | ✅ 运行中 | 0.33.3 |
+| Ollama | ✅ 运行中 | 0.40.15 |
 | Python | ✅ | 3.11.x |
 | pip | ✅ | 24.x |
 

@@ -150,7 +150,7 @@ MLX 原生版 `ollama pull` 后即为可用模型；GGUF（Q5 / GSQ IQ3）路线
 
 ```dockerfile
 FROM qwen3.8:27b-mlx
-PARAMETER num_ctx 131072
+PARAMETER num_ctx 262144
 PARAMETER draft_num_predict 3     # MTP 投机解码（Qwen3.8 自带加速）
 PARAMETER temperature 0.7
 PARAMETER top_p 0.95
@@ -179,7 +179,7 @@ TEMPLATE """{{- if .System }}<|system|>
 <|assistant|>
 {{ if .ReasoningContent }}<|reserved_special_token_145|>{{ .ReasoningContent }}<|end|>
 {{ end }}{{ .Response }}"""
-PARAMETER num_ctx 131072
+PARAMETER num_ctx 262144
 PARAMETER draft_num_predict 3
 ```
 
@@ -189,7 +189,7 @@ PARAMETER draft_num_predict 3
 FROM ./Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf   # 换成 IQ3_XXS 用同名 -IQ3_XXS- 文件
 FROM ./mmproj-Qwen3.8-27B-BF16.gguf
 TEMPLATE """（与上方 GGUF Q5 完全一致的多模态模板）"""
-PARAMETER num_ctx 131072
+PARAMETER num_ctx 262144
 PARAMETER draft_num_predict 3
 ```
 
@@ -203,7 +203,8 @@ ollama create qwen3.8-gsq-iq3s -f Modelfile.gsq
 
 ```bash
 # macOS 用户级全局配置（Ollama 以用户 LaunchAgent 运行，无需 sudo）
-launchctl setenv OLLAMA_CONTEXT_LENGTH 131072
+launchctl setenv OLLAMA_CONTEXT_LENGTH 262144
+launchctl setenv OLLAMA_NUM_PARALLEL 1
 launchctl setenv OLLAMA_FLASH_ATTENTION 1
 launchctl setenv OLLAMA_KV_CACHE_TYPE q8_0
 launchctl setenv OLLAMA_KEEP_ALIVE 30m
@@ -216,7 +217,8 @@ pkill -f "ollama serve" && sleep 2 && open -a Ollama
 
 | 变量 | 作用 | 不设置的后果 |
 |------|------|-------------|
-| `OLLAMA_CONTEXT_LENGTH=131072` | 全局默认 128K 上下文 | 模型退回 4096 默认值，长文档被静默截断 |
+| `OLLAMA_CONTEXT_LENGTH=262144` | 全局默认 256K 上下文（生产值；131072 为省内存可选项） | 模型退回 4096 默认值，长文档被静默截断 |
+| `OLLAMA_NUM_PARALLEL=1` | 并发槽位数（262144 时必须为 1，否则 KV 叠加触发 swap） | 多会话轮跑靠串行 FIFO，无需调大 |
 | `OLLAMA_FLASH_ATTENTION=1` | 长上下文推理提速 30–50% | 速度慢 |
 | `OLLAMA_KV_CACHE_TYPE=q8_0` | KV 缓存量化，内存占用减半 | 内存占用高，可能触发 swap |
 | `OLLAMA_KEEP_ALIVE=30m` | 模型驻留内存 30 分钟 | 每次调用等约 6 秒冷启动 |
@@ -233,7 +235,7 @@ pkill -f "ollama serve" && sleep 2 && open -a Ollama
 # 查看模型信息
 ollama show qwen3.8:27b-mlx
 
-# 确认上下文长度已生效（应输出 131072，不是 4096）
+# 确认上下文长度已生效（应输出 262144，不是 4096）
 ollama show qwen3.8:27b-mlx | grep num_ctx
 
 # 测试对话
@@ -392,7 +394,7 @@ MTPLX 只吃 MLX 档案、Apple Silicon 专用；官方标的 87.6 tok/s 本机�
 > 按现象索引的完整排查手册（9 个常见问题 + 根因 + 修复命令）见 **[TROUBLESHOOTING.md](./TROUBLESHOOTING.md)**，以下为高频简答。
 
 ### Q1: 内存不足怎么办？
-优先保持 `num_ctx 131072`（单跑稳定）；内存吃紧时下调到 65536，仍不足再换更小量化（Q4_K_M）。
+生产用 `num_ctx 262144`（见下方「多会话轮跑 2026-11-07 复核」）；若内存吃紧可降到 131072 或 65536，仍不足再换更小量化（Q4_K_M）。
 
 ### Q2: 生成速度很慢？
 检查是否开启了 Swap，确保模型完全加载到内存。

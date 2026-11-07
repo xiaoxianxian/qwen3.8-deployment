@@ -33,11 +33,11 @@ title: 踩坑排查手册
 **解决**：全局设置并重启 Ollama：
 
 ```bash
-launchctl setenv OLLAMA_CONTEXT_LENGTH 131072
+launchctl setenv OLLAMA_CONTEXT_LENGTH 262144
 pkill -f "ollama serve" && sleep 2 && open -a Ollama
 ```
 
-验证：`ollama show qwen3.8:27b-mlx` 应输出 `num_ctx 131072`（或 Modelfile 中 `PARAMETER num_ctx 131072`）。
+验证：`ollama show qwen3.8:27b-mlx` 应输出 `num_ctx 262144`（生产；省内存版 131072 亦可，Modelfile 中 `PARAMETER num_ctx` 同上）。
 
 ---
 

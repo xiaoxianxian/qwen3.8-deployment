@@ -136,7 +136,7 @@ The MLX native build is usable right after `ollama pull`. The GGUF (Q5 / GSQ IQ3
 
 ```dockerfile
 FROM qwen3.8:27b-mlx
-PARAMETER num_ctx 131072
+PARAMETER num_ctx 262144
 PARAMETER draft_num_predict 3     # MTP speculative decoding (Qwen3.8 built-in acceleration)
 PARAMETER temperature 0.7
 PARAMETER top_p 0.95
@@ -165,7 +165,7 @@ TEMPLATE """{{- if .System }}<|system|>
 <|assistant|>
 {{ if .ReasoningContent }}<|reserved_special_token_145|>{{ .ReasoningContent }}<|end|>
 {{ end }}{{ .Response }}"""
-PARAMETER num_ctx 131072
+PARAMETER num_ctx 262144
 PARAMETER draft_num_predict 3
 ```
 
@@ -175,7 +175,7 @@ PARAMETER draft_num_predict 3
 FROM ./Qwen3.8-27B-GSQ-RCO-IQ3_S-mtp.gguf   # for IQ3_XXS use the -IQ3_XXS- file
 FROM ./mmproj-Qwen3.8-27B-BF16.gguf
 TEMPLATE """(identical multimodal template as GGUF Q5 above)"""
-PARAMETER num_ctx 131072
+PARAMETER num_ctx 262144
 PARAMETER draft_num_predict 3
 ```
 
@@ -189,7 +189,8 @@ ollama create qwen3.8-gsq-iq3s -f Modelfile.gsq
 
 ```bash
 # macOS user-level global config (Ollama runs as a user LaunchAgent, no sudo needed)
-launchctl setenv OLLAMA_CONTEXT_LENGTH 131072
+launchctl setenv OLLAMA_CONTEXT_LENGTH 262144
+launchctl setenv OLLAMA_NUM_PARALLEL 1
 launchctl setenv OLLAMA_FLASH_ATTENTION 1
 launchctl setenv OLLAMA_KV_CACHE_TYPE q8_0
 launchctl setenv OLLAMA_KEEP_ALIVE 30m
@@ -202,12 +203,15 @@ pkill -f "ollama serve" && sleep 2 && open -a Ollama
 
 | Variable | Effect | If unset |
 |----------|--------|----------|
-| `OLLAMA_CONTEXT_LENGTH=131072` | global default 128K context | model falls back to 4096; long docs silently truncated |
+| `OLLAMA_CONTEXT_LENGTH=262144` | global default 256K context (production value; 131072 is the RAM-saving option) | model falls back to 4096; long docs silently truncated |
+| `OLLAMA_NUM_PARALLEL=1` | concurrency slots (must be 1 at 262144, else KV stacking triggers swap) | multi-session round-robin relies on serial FIFO; no need to raise |
 | `OLLAMA_FLASH_ATTENTION=1` | +30–50% long-context speed | slower |
 | `OLLAMA_KV_CACHE_TYPE=q8_0` | quantize KV cache, halve RAM | high RAM, may swap |
 | `OLLAMA_KEEP_ALIVE=30m` | keep model in RAM 30 min | ~6s cold start per call |
 
 > `launchctl setenv` is lost after a Mac reboot — re-run it. For a permanent fix, write the vars into Ollama's LaunchAgent plist.
+
+> **Multi-session round-robin (2026-11-07 re-check)**: `OLLAMA_NUM_PARALLEL` must be paired with `OLLAMA_CONTEXT_LENGTH` — **at 262144 it can only be 1** (262144 × 2 slots KV ≈ 20 GB, plus weights approaching 48 GB triggers swap); at 131072 you may set 2 (total KV equals 262144 × 1). On ollama 0.40.15 the MLX runner + Qwen3_5 architecture is still single-sequence serial decode — but this **does not block** multi-session round-robin: serial FIFO by request is itself "each session runs a bit, then the next," and with a bounded context sessions don't starve each other. The client side (Hermes `model.ollama_num_ctx`) can be adjusted on demand and overrides the server env per request. The actual launchd service is `~/Library/LaunchAgents/com.user.ollama-serve-main.plist` (KeepAlive brings up `serve` with the env vars); on login `com.user.ollama-loopback` re-`setenv`s the same values into the session env (fallback for when the Ollama.app self-starts `serve`). To verify the live value, check the `CONTEXT` column of `ollama ps`. **Do not place two ollama-serve plists side by side** (the newly written one never loads until reboot, so editing it is editing air); **after an Ollama.app update, watch whether the app grabs the port** (its env has no CONTEXT_LENGTH and falls back to 32768). See the Chinese guide's 2026-11-07 section for details.
 
 ### Step 7: Verify the install
 
@@ -215,7 +219,7 @@ pkill -f "ollama serve" && sleep 2 && open -a Ollama
 # Show model info
 ollama show qwen3.8:27b-mlx
 
-# Confirm context length took effect (should print 131072, not 4096)
+# Confirm context length took effect (should print 262144, not 4096)
 ollama show qwen3.8:27b-mlx | grep num_ctx
 
 # Test a chat
@@ -305,7 +309,7 @@ Full data: [A_B实测对比报告.md (A/B Report, Chinese)](./A_B实测对比报
 > Full troubleshooting playbook (9 issues + root cause + fix commands): **[TROUBLESHOOTING.md](./TROUBLESHOOTING.md)**. High-frequency answers below.
 
 ### Q1: Out of memory?
-Keep `num_ctx 131072` (stable for single runs); if RAM is tight, lower to 65536, then downsize quantization (Q4_K_M) if still insufficient.
+Production uses `num_ctx 262144` (see "Multi-session round-robin 2026-11-07 re-check"); if RAM is tight, drop to 131072 or 65536, then downsize quantization (Q4_K_M) if still insufficient.
 
 ### Q2: Generation is slow?
 Check for Swap — make sure the model is fully loaded into RAM.

@@ -1,4 +1,4 @@
-# Qwen3.8-27B 部署模板（生产在用，M5 Pro 48GB / Ollama 0.33.3）
+# Qwen3.8-27B 部署模板（生产在用，M5 Pro 48GB / Ollama 0.40.15）
 # 重建：ollama create qwen3.8:27b-mlx -f Modelfile
 #
 # 模型：官方 MLX 原生版 qwen3.8:27b-mlx（18GB，nvfp4 量化）
@@ -12,9 +12,9 @@
 
 FROM qwen3.8:27b-mlx
 
-# 上下文窗口：131072 是实测最佳平衡（28GB 内存、100% GPU、单跑稳定）
-# 131072 单跑稳定；此前 OOM 由多会话并发调用导致，与上下文长度无关
-PARAMETER num_ctx 131072
+# 上下文窗口：262144 为生产值（2026-11-07 复核；131072 为省内存轻量版）
+# 262144 + NUM_PARALLEL=1 在 48GB 上稳定；此前 OOM 由多会话并发调用导致，与上下文长度无关
+PARAMETER num_ctx 262144
 
 # MTP 投机解码：Qwen3.8 内嵌 MTP 头，但默认 draft=0（关闭），必须显式开启
 # 实测代码生成 ~11.7 → ~37.8 tok/s（约 3.9×），无损
