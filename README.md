@@ -225,7 +225,7 @@ pkill -f "ollama serve" && sleep 2 && open -a Ollama
 
 > `launchctl setenv` 在重启 Mac 后会失效，重启后重跑一遍即可；想一劳永逸，把变量写进 Ollama 的 LaunchAgent plist。
 
-> **多会话轮跑（2026-11-07 复核定版）**：`OLLAMA_NUM_PARALLEL` 设 `2`（131072×2 的总 KV 与单槽 262144 相同，内存不涨）。注意：MLX runner + Qwen3_5 架构在 ollama 0.40.15 实测仍为单序列串行解码，但这**不影响多会话轮跑**——串行按请求 FIFO 轮换本身就是「每个会话执行一会再轮下一个」，配合有界上下文即可多会话互不饿死。本机一劳永逸的 plist 实际路径是 `~/Library/LaunchAgents/com.user.ollama-serve.plist`（launchd KeepAlive 直接带环境变量拉起 serve）；验证实际生效值看 `ollama ps` 的 CONTEXT 列。**不要并排放两个 ollama serve 的 plist**（没重启机器时新写的那个永远不会被加载，改它等于改空气）。详见《调优与避坑指南》2026-11-07 节。
+> **多会话轮跑（2026-11-07 复核）**：`OLLAMA_NUM_PARALLEL` 必须与 `OLLAMA_CONTEXT_LENGTH` 配套——**262144 时只能为 1**（262144×2 槽 KV≈20GB，叠加权重逼近 48GB 触发 swap）；131072 时可设 2（总 KV 与 262144×1 相同）。实测 ollama 0.40.15 的 MLX runner + Qwen3_5 架构仍是单序列串行解码，但这**不影响多会话轮跑**——串行按请求 FIFO 轮换本身就是「每个会话执行一会再轮下一个」，配合有界上下文即可多会话互不饿死。客户端侧（Hermes `model.ollama_num_ctx`）可随时按需调整，会逐请求覆盖服务端 env。本机 launchd 服务实际路径是 `~/Library/LaunchAgents/com.user.ollama-serve-main.plist`（KeepAlive 带环境变量拉起 serve），登录时 `com.user.ollama-loopback` 会把同一组值 setenv 进会话环境（兜底 App 自起 serve 的场景）；验证实际生效值看 `ollama ps` 的 CONTEXT 列。**不要并排放两个 ollama serve 的 plist**（没重启机器时新写的那个永远不会被加载，改它等于改空气）；**通过 Ollama.app 更新后要留意 App 是否抢跑了 serve**（它的环境没有 CONTEXT_LENGTH，会回落 32768）。详见《调优与避坑指南》2026-11-07 节。
 
 ### 第七步：验证安装
 
